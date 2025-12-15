@@ -1,0 +1,57 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.cfgextractor'
+version = '1.0-SNAPSHOT'
+
+sourceCompatibility = '11'
+targetCompatibility = '11'
+
+repositories {
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+    google()  // For Android tools
+}
+
+dependencies {
+    // SootUp dependencies
+    implementation 'org.soot-oss:sootup.core:1.1.2'
+    implementation 'org.soot-oss:sootup.java.core:1.1.2'
+    implementation 'org.soot-oss:sootup.java.bytecode:1.1.2'
+    implementation 'org.soot-oss:sootup.callgraph:1.1.2'
+    implementation 'org.soot-oss:sootup.analysis:1.1.2'
+
+    // JSON serialization
+    implementation 'com.google.code.gson:gson:2.10.1'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    implementation 'org.slf4j:slf4j-simple:2.0.9'
+
+    // Testing
+    testImplementation 'junit:junit:4.13.2'
+}
+
+application {
+    mainClass = 'com.cfgextractor.Main'
+}
+
+// Task to run analysis on target directory
+task runAnalysis(type: JavaExec) {
+    group = 'application'
+    description = 'Run CFG extraction on target directory'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.cfgextractor.Main'
+    args = ['target/', 'output/']
+}
+
+// Create output directory
+task createOutputDir {
+    doLast {
+        file('output').mkdirs()
+    }
+}
+
+build.dependsOn createOutputDir

@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+gradle/
+gradlew
+gradlew.bat
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# Output
+output/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
