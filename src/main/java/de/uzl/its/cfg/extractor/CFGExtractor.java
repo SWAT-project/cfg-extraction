@@ -1,6 +1,6 @@
-package com.cfgextractor.extractor;
+package de.uzl.its.cfg.extractor;
 
-import com.cfgextractor.model.ControlFlowGraph;
+import de.uzl.its.cfg.model.ControlFlowGraph;
 import sootup.core.model.SootMethod;
 import sootup.java.core.views.JavaView;
 

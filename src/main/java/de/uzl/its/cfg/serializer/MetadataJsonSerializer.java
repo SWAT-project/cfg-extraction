@@ -1,4 +1,4 @@
-package com.cfgextractor.serializer;
+package de.uzl.its.cfg.serializer;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;

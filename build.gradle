@@ -4,7 +4,7 @@ plugins {
     id 'maven-publish'
 }
 
-group = 'com.cfgextractor'
+group = 'de.uzl.its'
 version = '1.0-SNAPSHOT'
 
 sourceCompatibility = '11'
@@ -36,7 +36,7 @@ dependencies {
 }
 
 application {
-    mainClass = 'com.cfgextractor.Main'
+    mainClass = 'de.uzl.its.cfg.Main'
 }
 
 // Task to run analysis on target directory
@@ -44,7 +44,7 @@ task runAnalysis(type: JavaExec) {
     group = 'application'
     description = 'Run CFG extraction on target directory'
     classpath = sourceSets.main.runtimeClasspath
-    mainClass = 'com.cfgextractor.Main'
+    mainClass = 'de.uzl.its.cfg.Main'
     args = ['target/', 'output/']
 }
 
@@ -63,7 +63,7 @@ publishing {
         maven(MavenPublication) {
             from components.java
 
-            groupId = 'com.cfgextractor'
+            groupId = 'de.uzl.its'
             artifactId = 'cfg-extractor'
             version = project.version
         }

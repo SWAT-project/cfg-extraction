@@ -1,8 +1,8 @@
-package com.cfgextractor.analyzer;
+package de.uzl.its.cfg.analyzer;
 
-import com.cfgextractor.model.CFGEdge;
-import com.cfgextractor.model.CFGNode;
-import com.cfgextractor.model.ControlFlowGraph;
+import de.uzl.its.cfg.model.CFGEdge;
+import de.uzl.its.cfg.model.CFGNode;
+import de.uzl.its.cfg.model.ControlFlowGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

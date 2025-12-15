@@ -1,6 +1,6 @@
-package com.cfgextractor.serializer;
+package de.uzl.its.cfg.serializer;
 
-import com.cfgextractor.model.ControlFlowGraph;
+import de.uzl.its.cfg.model.ControlFlowGraph;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.slf4j.Logger;

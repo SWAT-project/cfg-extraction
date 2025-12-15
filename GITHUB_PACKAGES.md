@@ -47,7 +47,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.cfgextractor:cfg-extractor:1.0-SNAPSHOT'
+    implementation 'de.uzl.its:cfg-extractor:1.0-SNAPSHOT'
 }
 ```
 
@@ -61,12 +61,12 @@ configurations {
 }
 
 dependencies {
-    cfgExtractorTool 'com.cfgextractor:cfg-extractor:1.0-SNAPSHOT'
+    cfgExtractorTool 'de.uzl.its:cfg-extractor:1.0-SNAPSHOT'
 }
 
 task extractCFG(type: JavaExec) {
     classpath = configurations.cfgExtractorTool
-    mainClass = 'com.cfgextractor.Main'
+    mainClass = 'de.uzl.its.cfg.Main'
     args = ['target/', 'output/', 'Main', 'main', 'inter']
 }
 ```

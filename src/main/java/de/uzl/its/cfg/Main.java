@@ -1,12 +1,12 @@
-package com.cfgextractor;
+package de.uzl.its.cfg;
 
-import com.cfgextractor.analyzer.CFGMetadataExtractor;
-import com.cfgextractor.extractor.CFGExtractor;
-import com.cfgextractor.extractor.IntraProceduralCFGExtractor;
-import com.cfgextractor.extractor.InterProceduralCFGExtractor;
-import com.cfgextractor.model.ControlFlowGraph;
-import com.cfgextractor.serializer.CFGJsonSerializer;
-import com.cfgextractor.serializer.MetadataJsonSerializer;
+import de.uzl.its.cfg.analyzer.CFGMetadataExtractor;
+import de.uzl.its.cfg.extractor.CFGExtractor;
+import de.uzl.its.cfg.extractor.IntraProceduralCFGExtractor;
+import de.uzl.its.cfg.extractor.InterProceduralCFGExtractor;
+import de.uzl.its.cfg.model.ControlFlowGraph;
+import de.uzl.its.cfg.serializer.CFGJsonSerializer;
+import de.uzl.its.cfg.serializer.MetadataJsonSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.inputlocation.AnalysisInputLocation;

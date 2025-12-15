@@ -1,4 +1,4 @@
-package com.cfgextractor.model;
+package de.uzl.its.cfg.model;
 
 import java.util.Objects;
 
