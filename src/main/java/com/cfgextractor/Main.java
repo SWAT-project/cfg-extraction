@@ -2,6 +2,7 @@ package com.cfgextractor;
 
 import com.cfgextractor.extractor.CFGExtractor;
 import com.cfgextractor.extractor.IntraProceduralCFGExtractor;
+import com.cfgextractor.extractor.InterProceduralCFGExtractor;
 import com.cfgextractor.model.ControlFlowGraph;
 import com.cfgextractor.serializer.CFGJsonSerializer;
 import org.slf4j.Logger;
@@ -21,16 +22,18 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Collections;
 import java.util.Optional;
 
 /**
  * Main entry point for CFG extraction.
  *
  * Usage:
- *   java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method]
+ *   java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type]
  *
  * Example:
- *   java -jar cfg-extractor.jar target/ output/ Main main
+ *   java -jar cfg-extractor.jar target/ output/ Main main intra
+ *   java -jar cfg-extractor.jar target/ output/ Main main inter
  */
 public class Main {
 
@@ -46,12 +49,14 @@ public class Main {
         String outputDir = args[1];
         String entryClassName = args.length > 2 ? args[2] : "Main";
         String entryMethodName = args.length > 3 ? args[3] : "main";
+        String analysisType = args.length > 4 ? args[4] : "intra";
 
         logger.info("Starting CFG extraction");
         logger.info("Input path: {}", inputPath);
         logger.info("Output directory: {}", outputDir);
         logger.info("Entry class: {}", entryClassName);
         logger.info("Entry method: {}", entryMethodName);
+        logger.info("Analysis type: {}", analysisType);
 
         try {
             // Create output directory if it doesn't exist
@@ -59,7 +64,7 @@ public class Main {
             Files.createDirectories(outputPath);
 
             // Run analysis
-            extractCFGs(inputPath, outputPath, entryClassName, entryMethodName);
+            extractCFGs(inputPath, outputPath, entryClassName, entryMethodName, analysisType);
 
             logger.info("CFG extraction completed successfully!");
             logger.info("Results written to: {}", outputPath.toAbsolutePath());
@@ -71,7 +76,8 @@ public class Main {
     }
 
     private static void extractCFGs(String inputPath, Path outputDir,
-                                    String entryClassName, String entryMethodName) throws IOException {
+                                    String entryClassName, String entryMethodName,
+                                    String analysisType) throws IOException {
 
         // Step 1: Create SootUp View for bytecode analysis
         logger.info("Creating SootUp view for bytecode analysis...");
@@ -100,12 +106,47 @@ public class Main {
         SootClass<?> entryClass = entryClassOpt.get();
         logger.info("Found entry class: {}", entryClass.getType());
 
-        // Step 3: Extract CFGs for all methods in the entry class
-        CFGExtractor extractor = new IntraProceduralCFGExtractor();
+        // Get the entry method
+        Optional<? extends SootMethod> entryMethodOpt = entryClass.getMethods().stream()
+                .filter(m -> m.getName().equals(entryMethodName))
+                .findFirst();
+
+        if (!entryMethodOpt.isPresent()) {
+            logger.error("Entry method not found: {}", entryMethodName);
+            throw new RuntimeException("Entry method not found: " + entryMethodName);
+        }
+
+        SootMethod entryMethod = entryMethodOpt.get();
+
+        // Step 3: Choose extractor based on analysis type
+        CFGExtractor extractor;
         CFGJsonSerializer serializer = new CFGJsonSerializer();
 
-        int methodCount = 0;
-        for (SootMethod method : entryClass.getMethods()) {
+        if (analysisType.equalsIgnoreCase("inter")) {
+            // Inter-procedural analysis: create single CFG with all reachable methods
+            logger.info("Using inter-procedural analysis");
+            extractor = new InterProceduralCFGExtractor(view, Collections.singletonList(entryMethod));
+
+            // Extract single inter-procedural CFG
+            ControlFlowGraph cfg = extractor.extractCFG(entryMethod, view);
+
+            String filename = String.format("%s_%s_interprocedural.json",
+                    entryClass.getType().getClassName(),
+                    entryMethodName.replace("<", "").replace(">", ""));
+
+            Path outputFile = outputDir.resolve(filename);
+            serializer.serialize(cfg, outputFile);
+
+            logger.info("Saved inter-procedural CFG to: {}", outputFile.getFileName());
+            logger.info("Processed {} methods total", cfg.getMetadata().get("methodCount"));
+
+        } else {
+            // Intra-procedural analysis: separate CFG for each method
+            logger.info("Using intra-procedural analysis");
+            extractor = new IntraProceduralCFGExtractor();
+
+            int methodCount = 0;
+            for (SootMethod method : entryClass.getMethods()) {
             try {
                 logger.info("Processing method: {}", method.getSignature());
 
@@ -128,55 +169,58 @@ public class Main {
                 logger.warn("Failed to process method {}: {}",
                            method.getSignature(), e.getMessage());
             }
-        }
-
-        // Step 4: Also extract CFGs for other classes found
-        logger.info("Extracting CFGs for all discovered classes...");
-        for (SootClass<?> sootClass : view.getClasses()) {
-            // Skip the entry class (already processed)
-            if (sootClass.equals(entryClass)) {
-                continue;
             }
 
-            String className = sootClass.getType().getClassName();
-            logger.info("Processing class: {}", className);
+            // Step 4: Also extract CFGs for other classes found
+            logger.info("Extracting CFGs for all discovered classes...");
+            for (SootClass<?> sootClass : view.getClasses()) {
+                // Skip the entry class (already processed)
+                if (sootClass.equals(entryClass)) {
+                    continue;
+                }
 
-            for (SootMethod method : sootClass.getMethods()) {
-                try {
-                    ControlFlowGraph cfg = extractor.extractCFG(method, view);
+                String className = sootClass.getType().getClassName();
+                logger.info("Processing class: {}", className);
 
-                    String methodName = method.getName();
-                    String safeMethodName = methodName.replace("<", "").replace(">", "");
-                    String filename = String.format("%s_%s.json", className, safeMethodName);
+                for (SootMethod method : sootClass.getMethods()) {
+                    try {
+                        ControlFlowGraph cfg = extractor.extractCFG(method, view);
 
-                    Path outputFile = outputDir.resolve(filename);
-                    serializer.serialize(cfg, outputFile);
+                        String methodName = method.getName();
+                        String safeMethodName = methodName.replace("<", "").replace(">", "");
+                        String filename = String.format("%s_%s.json", className, safeMethodName);
 
-                    methodCount++;
+                        Path outputFile = outputDir.resolve(filename);
+                        serializer.serialize(cfg, outputFile);
 
-                } catch (Exception e) {
-                    logger.warn("Failed to process method {}: {}",
-                               method.getSignature(), e.getMessage());
+                        methodCount++;
+
+                    } catch (Exception e) {
+                        logger.warn("Failed to process method {}: {}",
+                                   method.getSignature(), e.getMessage());
+                    }
                 }
             }
-        }
 
-        logger.info("Processed {} methods total", methodCount);
+            logger.info("Processed {} methods total", methodCount);
+        } // End of if-else for analysis type
     }
 
     private static void printUsage() {
         System.out.println("CFG Extractor - Extract Control Flow Graphs from Java bytecode");
         System.out.println();
         System.out.println("Usage:");
-        System.out.println("  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method]");
+        System.out.println("  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");
         System.out.println("  output-dir    : Directory to write JSON output files");
         System.out.println("  entry-class   : Entry point class name (default: Main)");
         System.out.println("  entry-method  : Entry point method name (default: main)");
+        System.out.println("  analysis-type : 'intra' for per-method CFGs, 'inter' for combined (default: intra)");
         System.out.println();
-        System.out.println("Example:");
-        System.out.println("  java -jar cfg-extractor.jar target/ output/ Main main");
+        System.out.println("Examples:");
+        System.out.println("  java -jar cfg-extractor.jar target/ output/ Main main intra");
+        System.out.println("  java -jar cfg-extractor.jar target/ output/ Main main inter");
     }
 }
