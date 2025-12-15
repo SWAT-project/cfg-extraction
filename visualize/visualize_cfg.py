@@ -79,7 +79,8 @@ class CFGVisualizer:
             G.add_node(node_id,
                       statement=stmt,
                       stmt_type=node['stmtType'],
-                      line=node.get('lineNumber', -1))
+                      line=node.get('lineNumber', -1),
+                      metadata=node.get('metadata', ''))
 
         # Add edges
         for edge in self.cfg_data['edges']:
@@ -94,6 +95,183 @@ class CFGVisualizer:
 
         self.graph = G
         return G
+
+    def _extract_method_from_metadata(self, node):
+        """Extract method name from node metadata."""
+        metadata = self.graph.nodes[node].get('metadata', '')
+        if metadata and metadata.startswith('method: '):
+            return metadata[8:]  # Remove 'method: ' prefix
+        return None
+
+    def _inter_procedural_layout(self, graph, entry_node, horizontal=True):
+        """
+        Layout for inter-procedural CFGs that groups nodes by method.
+
+        Each method uses the standard hierarchical layout, then method blocks
+        are arranged horizontally or vertically with clear separation.
+
+        Args:
+            horizontal: If True, arrange methods horizontally; if False, stack vertically
+        """
+        # Group nodes by method
+        methods_nodes = {}
+        for node in graph.nodes():
+            method = self._extract_method_from_metadata(node)
+            if method:
+                if method not in methods_nodes:
+                    methods_nodes[method] = []
+                methods_nodes[method].append(node)
+
+        # If no method metadata, fall back to regular layout
+        if not methods_nodes:
+            return self._hierarchical_layout(graph, entry_node), {}
+
+        # Determine method order (BFS from entry to visit methods in call order)
+        method_order = []
+        visited_methods = set()
+
+        if entry_node:
+            entry_method = self._extract_method_from_metadata(entry_node)
+            if entry_method:
+                queue = [entry_method]
+                visited_methods.add(entry_method)
+
+                while queue:
+                    current_method = queue.pop(0)
+                    method_order.append(current_method)
+
+                    # Find methods called from this method
+                    for node in methods_nodes.get(current_method, []):
+                        for successor in graph.successors(node):
+                            succ_method = self._extract_method_from_metadata(successor)
+                            if succ_method and succ_method not in visited_methods:
+                                visited_methods.add(succ_method)
+                                queue.append(succ_method)
+
+        # Add any remaining methods not reached
+        for method in methods_nodes:
+            if method not in visited_methods:
+                method_order.append(method)
+
+        # Layout each method independently using the hierarchical layout
+        method_positions = {}  # method -> {node: (x, y)}
+        method_bounds = {}     # method -> (min_x, max_x, min_y, max_y)
+
+        for method in method_order:
+            method_nodes = methods_nodes[method]
+
+            # Create subgraph for this method
+            method_subgraph = graph.subgraph(method_nodes)
+
+            # Find local entry node for this method
+            local_entry = None
+            for node in method_nodes:
+                if node == entry_node:
+                    local_entry = node
+                    break
+
+            if not local_entry:
+                # Find node with no intra-method predecessors
+                for node in method_nodes:
+                    preds_in_method = [p for p in graph.predecessors(node)
+                                      if self._extract_method_from_metadata(p) == method]
+                    if not preds_in_method:
+                        local_entry = node
+                        break
+
+            # Use existing hierarchical layout for this method
+            method_pos = self._hierarchical_layout(method_subgraph, local_entry)
+            method_positions[method] = method_pos
+
+            # Calculate bounding box
+            if method_pos:
+                xs = [x for x, y in method_pos.values()]
+                ys = [y for x, y in method_pos.values()]
+                method_bounds[method] = (min(xs), max(xs), min(ys), max(ys))
+
+        # Now arrange method blocks horizontally or vertically
+        method_gap = 20  # Gap between methods
+        pos = {}
+
+        if horizontal:
+            # Arrange methods side-by-side
+            current_x_offset = 0
+            for method in method_order:
+                method_pos = method_positions[method]
+                min_x, max_x, min_y, max_y = method_bounds[method]
+
+                # Shift this method to the right
+                for node, (x, y) in method_pos.items():
+                    pos[node] = (x - min_x + current_x_offset, y)
+
+                # Update offset for next method
+                width = max_x - min_x
+                current_x_offset += width + method_gap
+        else:
+            # Stack methods vertically
+            current_y_offset = 0
+            for method in method_order:
+                method_pos = method_positions[method]
+                min_x, max_x, min_y, max_y = method_bounds[method]
+
+                # Shift this method down
+                for node, (x, y) in method_pos.items():
+                    pos[node] = (x, y - min_y - current_y_offset)
+
+                # Update offset for next method
+                height = max_y - min_y
+                current_y_offset += height + method_gap
+
+        return pos, method_bounds
+
+    def _layout_method_nodes(self, subgraph, nodes, entry_node, v_spacing, h_spacing):
+        """Layout nodes within a single method using BFS."""
+        if not nodes:
+            return {}
+
+        # BFS from entry to assign layers
+        layers = {}
+        if entry_node and entry_node in nodes:
+            visited = {entry_node}
+            queue = [(entry_node, 0)]
+
+            while queue:
+                node, layer = queue.pop(0)
+                layers[node] = layer
+
+                for successor in subgraph.successors(node):
+                    if successor not in visited and successor in nodes:
+                        visited.add(successor)
+                        queue.append((successor, layer + 1))
+
+        # Assign layer 0 to nodes without assigned layer
+        for node in nodes:
+            if node not in layers:
+                layers[node] = 0
+
+        # Group by layer
+        nodes_by_layer = {}
+        for node, layer in layers.items():
+            if layer not in nodes_by_layer:
+                nodes_by_layer[layer] = []
+            nodes_by_layer[layer].append(node)
+
+        # Assign positions
+        pos = {}
+        for layer, layer_nodes in nodes_by_layer.items():
+            y = -layer * v_spacing
+            num_nodes = len(layer_nodes)
+
+            if num_nodes == 1:
+                x_positions = [0]
+            else:
+                x_positions = [(i - (num_nodes - 1) / 2) * h_spacing
+                              for i in range(num_nodes)]
+
+            for i, node in enumerate(sorted(layer_nodes)):
+                pos[node] = (x_positions[i], y)
+
+        return pos
 
     def _hierarchical_layout(self, graph, entry_node):
         """
@@ -140,7 +318,7 @@ class CFGVisualizer:
 
         # Assign positions: y based on layer (top to bottom), x spread within layer
         pos = {}
-        vertical_spacing = 6  # Large vertical space between layers
+        vertical_spacing = 10  # Large vertical space between layers
         horizontal_spacing = 3  # Horizontal spacing between nodes in same layer
 
         for layer, nodes in nodes_by_layer.items():
@@ -173,14 +351,26 @@ class CFGVisualizer:
         # Create figure with taller height for vertical layout
         fig, ax = plt.subplots(figsize=(20, 24))
 
-        # Use hierarchical layout for CFGs
+        # Choose layout based on analysis type
         entry_node = self.cfg_data.get('entryNodeId')
+        analysis_type = self.cfg_data.get('analysisType', 'INTRA_PROCEDURAL')
 
-        try:
-            pos = nx.nx_agraph.graphviz_layout(self.graph, prog='dot')
-        except:
-            # Fallback to custom hierarchical layout
-            pos = self._hierarchical_layout(self.graph, entry_node)
+        # Check if this is inter-procedural by looking at analysis type or node metadata
+        is_inter_procedural = (analysis_type == 'INTER_PROCEDURAL' or
+                              any(self.graph.nodes[node].get('metadata', '').startswith('method: ')
+                                  for node in self.graph.nodes()))
+
+        # Use custom layout for inter-procedural, try graphviz for intra-procedural
+        method_bounds = {}  # Will store bounding boxes for methods
+        if is_inter_procedural:
+            # Use horizontal=True for side-by-side, horizontal=False for vertical stacking
+            pos, method_bounds = self._inter_procedural_layout(self.graph, entry_node, horizontal=True)
+        else:
+            try:
+                pos = nx.nx_agraph.graphviz_layout(self.graph, prog='dot')
+            except:
+                # Fallback to custom hierarchical layout
+                pos = self._hierarchical_layout(self.graph, entry_node)
 
         # Draw nodes
         entry_node = self.cfg_data.get('entryNodeId')
@@ -202,6 +392,50 @@ class CFGVisualizer:
                               node_shape='s',
                               alpha=0.9,
                               ax=ax)
+
+        # Draw bounding boxes around methods (for inter-procedural CFGs)
+        if method_bounds:
+            # Recalculate bounds from final positions
+            final_method_bounds = {}
+            for method in method_bounds.keys():
+                # Find all nodes belonging to this method
+                method_node_positions = []
+                for node in self.graph.nodes():
+                    node_method = self._extract_method_from_metadata(node)
+                    if node_method == method and node in pos:
+                        method_node_positions.append(pos[node])
+
+                if method_node_positions:
+                    xs = [x for x, y in method_node_positions]
+                    ys = [y for x, y in method_node_positions]
+                    final_method_bounds[method] = (min(xs), max(xs), min(ys), max(ys))
+
+            # Draw bounding boxes
+            for method, (min_x, max_x, min_y, max_y) in final_method_bounds.items():
+                # Add padding around the method
+                padding = 2
+                width = max_x - min_x + 2 * padding
+                height = max_y - min_y + 2 * padding
+
+                # Draw rectangle
+                rect = plt.Rectangle(
+                    (min_x - padding, min_y - padding),
+                    width, height,
+                    fill=False,
+                    edgecolor='gray',
+                    linewidth=2,
+                    linestyle='--',
+                    alpha=0.5
+                )
+                ax.add_patch(rect)
+
+                # Add method name label at the top of the box
+                method_name = method.split(':')[-1].split('(')[0]  # Extract just the method name
+                ax.text(min_x - padding, max_y + padding + 0.5,
+                       method_name,
+                       fontsize=10,
+                       fontweight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgray', alpha=0.7))
 
         # Draw edges with different colors/styles based on type
         edge_lists = {}
@@ -270,6 +504,16 @@ class CFGVisualizer:
             plt.Line2D([0], [0], color='orange', linewidth=2,
                       linestyle='dashed', label='Exception'),
         ]
+
+        # Add inter-procedural edge types if present
+        if is_inter_procedural:
+            legend_elements.extend([
+                plt.Line2D([0], [0], color='blue', linewidth=2,
+                          linestyle='dotted', label='CALL'),
+                plt.Line2D([0], [0], color='purple', linewidth=2,
+                          linestyle='dotted', label='RETURN'),
+            ])
+
         ax.legend(handles=legend_elements, loc='upper right')
 
         # Add statistics

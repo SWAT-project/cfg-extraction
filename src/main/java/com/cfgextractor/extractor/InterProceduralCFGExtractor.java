@@ -213,6 +213,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                                     }
                                 }
                             }
+                        } else {
+                            logger.debug("Callee not found in view (may be library method): {}", calleeSig);
                         }
                     }
                 }
@@ -233,13 +235,21 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private Set<MethodSignature> getCallees(SootMethod caller, Stmt callSite) {
         Set<MethodSignature> callees = new HashSet<>();
 
-        // Use call graph to find targets
-        try {
-            Set<MethodSignature> targets = callGraph.callsFrom(caller.getSignature());
-            // Filter to only those that could be from this call site
-            callees.addAll(targets);
-        } catch (Exception e) {
-            logger.debug("Could not get callees from call graph: {}", e.getMessage());
+        // Extract the invoke expression from the call site
+        AbstractInvokeExpr invokeExpr = null;
+        if (callSite instanceof JAssignStmt) {
+            JAssignStmt assign = (JAssignStmt) callSite;
+            if (assign.getRightOp() instanceof AbstractInvokeExpr) {
+                invokeExpr = (AbstractInvokeExpr) assign.getRightOp();
+            }
+        } else if (callSite.containsInvokeExpr()) {
+            invokeExpr = callSite.getInvokeExpr();
+        }
+
+        if (invokeExpr != null) {
+            // Get the specific method being invoked at this call site
+            MethodSignature targetMethod = invokeExpr.getMethodSignature();
+            callees.add(targetMethod);
         }
 
         return callees;
@@ -259,10 +269,29 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
     private String findReturnSite(List<Stmt> stmts, int callSiteIndex,
                                   ControlFlowGraph cfg, Map<String, String> idMapping) {
-        // Return site is the next statement after the call
-        if (callSiteIndex + 1 < stmts.size()) {
-            Stmt returnSite = stmts.get(callSiteIndex + 1);
-            return findNodeForStatement(cfg, returnSite, idMapping);
+        // Return site should be the CFG successor of the call site, not just the next statement
+        // Find the call site statement
+        Stmt callSite = stmts.get(callSiteIndex);
+        String callSiteStmt = callSite.toString();
+
+        // Find the call site node in the intra-procedural CFG (with OLD ID)
+        String oldCallSiteId = null;
+        for (CFGNode node : cfg.getNodes()) {
+            if (node.getStatement().equals(callSiteStmt)) {
+                oldCallSiteId = node.getId();
+                break;
+            }
+        }
+
+        if (oldCallSiteId != null) {
+            // Find the successor in the intra-procedural CFG (with OLD IDs)
+            for (CFGEdge edge : cfg.getEdges()) {
+                if (edge.getSource().equals(oldCallSiteId)) {
+                    // Map the target to NEW ID
+                    String oldTargetId = edge.getTarget();
+                    return idMapping.get(oldTargetId);
+                }
+            }
         }
 
         return null;
