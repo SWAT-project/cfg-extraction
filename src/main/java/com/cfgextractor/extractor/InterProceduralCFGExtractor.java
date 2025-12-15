@@ -42,7 +42,6 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final Map<MethodSignature, String> methodEntryNodes;
     private final Map<MethodSignature, Set<String>> methodExitNodes;
     private final Set<String> methodBlacklist;
-    private final Map<String, Integer> methodCallCounts;
     private int nodeCounter;
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
@@ -52,10 +51,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         this.methodEntryNodes = new HashMap<>();
         this.methodExitNodes = new HashMap<>();
         this.methodBlacklist = new HashSet<>();
-        this.methodCallCounts = new HashMap<>();
         this.nodeCounter = 0;
 
         // Configure default blacklist (methods to not expand even if available)
+        // These methods will have statement nodes but no CALL/RETURN edges
         this.methodBlacklist.add("org.sosy_lab.sv_benchmarks.Verifier");
         this.methodBlacklist.add("java.lang.");
         this.methodBlacklist.add("java.util.");
@@ -90,9 +89,6 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         logger.info("Inter-procedural CFG extracted: {} nodes, {} edges",
                    combinedCFG.getNodes().size(),
                    combinedCFG.getEdges().size());
-
-        // Log method call statistics
-        logMethodCallStatistics();
 
         return combinedCFG;
     }
@@ -186,10 +182,6 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 Set<MethodSignature> callees = getCallees(method, stmt);
 
                 for (MethodSignature calleeSig : callees) {
-                    // Count this method call
-                    String calleeStr = calleeSig.toString();
-                    methodCallCounts.put(calleeStr, methodCallCounts.getOrDefault(calleeStr, 0) + 1);
-
                     // Check if method is blacklisted
                     if (isBlacklisted(calleeSig)) {
                         logger.debug("Skipping blacklisted method: {}", calleeSig);
@@ -343,20 +335,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         return false;
     }
 
-    private void logMethodCallStatistics() {
-        if (methodCallCounts.isEmpty()) {
-            logger.info("No method calls recorded");
-            return;
-        }
-
-        logger.info("=== Method Call Statistics ===");
-        logger.info("Total unique methods called: {}", methodCallCounts.size());
-        logger.info("Total method call sites: {}",
-            methodCallCounts.values().stream().mapToInt(Integer::intValue).sum());
-    }
-
-    public Map<String, Integer> getMethodCallCounts() {
-        return new HashMap<>(methodCallCounts);
+    public Set<String> getMethodBlacklist() {
+        return new HashSet<>(methodBlacklist);
     }
 
     @Override

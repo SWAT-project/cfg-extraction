@@ -1,5 +1,6 @@
 package com.cfgextractor;
 
+import com.cfgextractor.analyzer.CFGMetadataExtractor;
 import com.cfgextractor.extractor.CFGExtractor;
 import com.cfgextractor.extractor.IntraProceduralCFGExtractor;
 import com.cfgextractor.extractor.InterProceduralCFGExtractor;
@@ -24,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -141,14 +143,20 @@ public class Main {
             logger.info("Saved inter-procedural CFG to: {}", outputFile.getFileName());
             logger.info("Processed {} methods total", cfg.getMetadata().get("methodCount"));
 
-            // Save metadata about method calls (including out-of-scope/blacklisted methods)
+            // Extract and save metadata from the CFG
+            CFGMetadataExtractor metadataExtractor = new CFGMetadataExtractor();
+            Map<String, Object> metadata = metadataExtractor.extractMetadata(cfg, interExtractor.getMethodBlacklist());
+
+            // Log statistics to console
+            metadataExtractor.logStatistics(metadata);
+
             String metadataFilename = String.format("%s_%s_metadata.json",
                     entryClass.getType().getClassName(),
                     entryMethodName.replace("<", "").replace(">", ""));
             Path metadataFile = outputDir.resolve(metadataFilename);
 
             MetadataJsonSerializer metadataSerializer = new MetadataJsonSerializer();
-            metadataSerializer.serialize(interExtractor.getMethodCallCounts(), metadataFile);
+            metadataSerializer.serialize(metadata, metadataFile);
 
             logger.info("Saved metadata to: {}", metadataFile.getFileName());
 

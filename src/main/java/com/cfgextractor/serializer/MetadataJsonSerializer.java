@@ -30,18 +30,12 @@ public class MetadataJsonSerializer {
 
     /**
      * Serialize metadata to JSON and write to file
-     * @param methodCallCounts Map of method signatures to call counts
+     * @param metadata Map containing CFG metadata and metrics
      * @param outputPath The output file path
      * @throws IOException If writing fails
      */
-    public void serialize(Map<String, Integer> methodCallCounts, Path outputPath) throws IOException {
+    public void serialize(Map<String, Object> metadata, Path outputPath) throws IOException {
         logger.info("Serializing metadata to: {}", outputPath);
-
-        // Create metadata structure
-        Map<String, Object> metadata = new HashMap<>();
-        metadata.put("methodCalls", methodCallCounts);
-        metadata.put("totalUniqueMethods", methodCallCounts.size());
-        metadata.put("totalCallSites", methodCallCounts.values().stream().mapToInt(Integer::intValue).sum());
 
         String json = gson.toJson(metadata);
 
