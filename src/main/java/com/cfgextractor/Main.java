@@ -5,6 +5,7 @@ import com.cfgextractor.extractor.IntraProceduralCFGExtractor;
 import com.cfgextractor.extractor.InterProceduralCFGExtractor;
 import com.cfgextractor.model.ControlFlowGraph;
 import com.cfgextractor.serializer.CFGJsonSerializer;
+import com.cfgextractor.serializer.MetadataJsonSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.inputlocation.AnalysisInputLocation;
@@ -125,10 +126,10 @@ public class Main {
         if (analysisType.equalsIgnoreCase("inter")) {
             // Inter-procedural analysis: create single CFG with all reachable methods
             logger.info("Using inter-procedural analysis");
-            extractor = new InterProceduralCFGExtractor(view, Collections.singletonList(entryMethod));
+            InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view, Collections.singletonList(entryMethod));
 
             // Extract single inter-procedural CFG
-            ControlFlowGraph cfg = extractor.extractCFG(entryMethod, view);
+            ControlFlowGraph cfg = interExtractor.extractCFG(entryMethod, view);
 
             String filename = String.format("%s_%s_interprocedural.json",
                     entryClass.getType().getClassName(),
@@ -139,6 +140,17 @@ public class Main {
 
             logger.info("Saved inter-procedural CFG to: {}", outputFile.getFileName());
             logger.info("Processed {} methods total", cfg.getMetadata().get("methodCount"));
+
+            // Save metadata about method calls (including out-of-scope/blacklisted methods)
+            String metadataFilename = String.format("%s_%s_metadata.json",
+                    entryClass.getType().getClassName(),
+                    entryMethodName.replace("<", "").replace(">", ""));
+            Path metadataFile = outputDir.resolve(metadataFilename);
+
+            MetadataJsonSerializer metadataSerializer = new MetadataJsonSerializer();
+            metadataSerializer.serialize(interExtractor.getMethodCallCounts(), metadataFile);
+
+            logger.info("Saved metadata to: {}", metadataFile.getFileName());
 
         } else {
             // Intra-procedural analysis: separate CFG for each method
