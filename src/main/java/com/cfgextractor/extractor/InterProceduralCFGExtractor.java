@@ -168,54 +168,62 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // Get the node ID for this call site
                 String callSiteId = findNodeForStatement(methodCFG, stmt, oldToNewId);
 
-                if (callSiteId != null) {
-                    // Find callees using call graph
-                    Set<MethodSignature> callees = getCallees(method, stmt);
+                assert callSiteId != null : "Failed to find CFG node for call site statement: " + stmt + " in method: " + methodSig;
 
-                    for (MethodSignature calleeSig : callees) {
-                        Optional<? extends SootMethod> calleeOpt = view.getMethod(calleeSig);
+                // Find callees using call graph
+                Set<MethodSignature> callees = getCallees(method, stmt);
 
-                        if (calleeOpt.isPresent()) {
-                            SootMethod callee = calleeOpt.get();
+                for (MethodSignature calleeSig : callees) {
+                    Optional<? extends SootMethod> calleeOpt = view.getMethod(calleeSig);
 
-                            // Add CALL edge
-                            String calleeEntry = methodEntryNodes.get(calleeSig);
+                    if (calleeOpt.isPresent()) {
+                        SootMethod callee = calleeOpt.get();
 
-                            if (calleeEntry == null) {
-                                // Recursively extract callee CFG
-                                extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
-                                calleeEntry = methodEntryNodes.get(calleeSig);
-                            }
+                        // Add CALL edge
+                        String calleeEntry = methodEntryNodes.get(calleeSig);
 
-                            if (calleeEntry != null) {
-                                CFGEdge callEdge = new CFGEdge(
-                                    callSiteId,
-                                    calleeEntry,
-                                    CFGEdge.EdgeType.CALL,
-                                    callee.getName()
-                                );
-                                combinedCFG.addEdge(callEdge);
-
-                                // Add RETURN edges from callee exits to return site
-                                String returnSiteId = findReturnSite(stmts, i, methodCFG, oldToNewId);
-
-                                if (returnSiteId != null) {
-                                    Set<String> calleeExits = methodExitNodes.get(calleeSig);
-                                    if (calleeExits != null) {
-                                        for (String exitId : calleeExits) {
-                                            CFGEdge returnEdge = new CFGEdge(
-                                                exitId,
-                                                returnSiteId,
-                                                CFGEdge.EdgeType.RETURN
-                                            );
-                                            combinedCFG.addEdge(returnEdge);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            logger.debug("Callee not found in view (may be library method): {}", calleeSig);
+                        if (calleeEntry == null) {
+                            // Recursively extract callee CFG
+                            extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
+                            calleeEntry = methodEntryNodes.get(calleeSig);
                         }
+
+                        // If calleeEntry is still null after extraction attempt, the method was either:
+                        // 1. Already processed (in processedMethods)
+                        // 2. Skipped due to depth limit
+                        // 3. Has no body
+                        // In all these cases, we should fail fast to identify the issue
+                        assert calleeEntry != null : "Failed to get entry node for callee: " + calleeSig +
+                            " (depth=" + depth + ", already processed=" + processedMethods.contains(calleeSig) +
+                            ", has body=" + callee.hasBody() + ")";
+
+                        CFGEdge callEdge = new CFGEdge(
+                            callSiteId,
+                            calleeEntry,
+                            CFGEdge.EdgeType.CALL,
+                            callee.getName()
+                        );
+                        combinedCFG.addEdge(callEdge);
+
+                        // Add RETURN edges from callee exits to return site
+                        String returnSiteId = findReturnSite(stmts, i, methodCFG, oldToNewId);
+
+                        assert returnSiteId != null : "Failed to find return site for call at statement: " + stmt +
+                            " in method: " + methodSig + " (call to: " + calleeSig + ")";
+
+                        Set<String> calleeExits = methodExitNodes.get(calleeSig);
+                        assert calleeExits != null : "Failed to get exit nodes for callee: " + calleeSig;
+
+                        for (String exitId : calleeExits) {
+                            CFGEdge returnEdge = new CFGEdge(
+                                exitId,
+                                returnSiteId,
+                                CFGEdge.EdgeType.RETURN
+                            );
+                            combinedCFG.addEdge(returnEdge);
+                        }
+                    } else {
+                        logger.debug("Callee not found in view (may be library method): {}", calleeSig);
                     }
                 }
             }
@@ -246,11 +254,12 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             invokeExpr = callSite.getInvokeExpr();
         }
 
-        if (invokeExpr != null) {
-            // Get the specific method being invoked at this call site
-            MethodSignature targetMethod = invokeExpr.getMethodSignature();
-            callees.add(targetMethod);
-        }
+        // If isCallSite() returned true, invokeExpr should not be null
+        assert invokeExpr != null : "Failed to extract invoke expression from call site: " + callSite + " in method: " + caller.getSignature();
+
+        // Get the specific method being invoked at this call site
+        MethodSignature targetMethod = invokeExpr.getMethodSignature();
+        callees.add(targetMethod);
 
         return callees;
     }
@@ -260,7 +269,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         for (CFGNode node : cfg.getNodes()) {
             if (node.getStatement().equals(stmtStr)) {
-                return idMapping.get(node.getId());
+                String newNodeId = idMapping.get(node.getId());
+                assert newNodeId != null : "Failed to map node ID: " + node.getId() + " for statement: " + stmt;
+                return newNodeId;
             }
         }
 
@@ -289,11 +300,14 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 if (edge.getSource().equals(oldCallSiteId)) {
                     // Map the target to NEW ID
                     String oldTargetId = edge.getTarget();
-                    return idMapping.get(oldTargetId);
+                    String newTargetId = idMapping.get(oldTargetId);
+                    assert newTargetId != null : "Failed to map return site node ID: " + oldTargetId + " (call site: " + callSite + ")";
+                    return newTargetId;
                 }
             }
         }
 
+        // No successor found for call site - this should not happen for valid CFGs
         return null;
     }
 

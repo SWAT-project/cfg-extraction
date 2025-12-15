@@ -60,12 +60,17 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         Collection<Stmt> startingStmts = stmtGraph.getNodes();
         if (!startingStmts.isEmpty()) {
             // Find entry node: node with no predecessors
+            boolean foundEntry = false;
             for (Stmt stmt : startingStmts) {
                 if (stmtGraph.predecessors(stmt).isEmpty()) {
                     cfg.setEntryNode(stmtToId.get(stmt));
+                    foundEntry = true;
                     break;
                 }
             }
+            assert foundEntry : "Failed to find entry node (no statement with no predecessors) in method: " + methodSig;
+        } else {
+            throw new AssertionError("Method has no statements in statement graph: " + methodSig);
         }
 
         // Create edges based on control flow
@@ -83,12 +88,14 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 // Other branching statements (goto, switch, etc.)
                 for (Stmt successor : successors) {
                     String targetId = stmtToId.get(successor);
+                    assert targetId != null : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
                     cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.NORMAL));
                 }
             } else {
                 // Normal flow
                 for (Stmt successor : successors) {
                     String targetId = stmtToId.get(successor);
+                    assert targetId != null : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
                     cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.NORMAL));
                 }
             }
@@ -137,6 +144,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         for (int i = 0; i < successors.size(); i++) {
             Stmt successor = successors.get(i);
             String targetId = stmtToId.get(successor);
+            assert targetId != null : "Successor statement not found in stmtToId map for conditional branch: " + successor + " (source: " + ifStmt + ")";
+
             CFGEdge.EdgeType edgeType;
             String label;
 
@@ -165,12 +174,12 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             Stmt handlerStmt = trap.getHandlerStmt();
             String handlerId = stmtToId.get(handlerStmt);
 
-            if (handlerId != null) {
-                // Add exception edges from protected statements to handler
-                // Note: This is a simplified version. A more complete version would
-                // add edges from each protected statement.
-                logger.debug("Found exception handler at: {}", handlerStmt);
-            }
+            assert handlerId != null : "Exception handler statement not found in stmtToId map: " + handlerStmt;
+
+            // Add exception edges from protected statements to handler
+            // Note: This is a simplified version. A more complete version would
+            // add edges from each protected statement.
+            logger.debug("Found exception handler at: {}", handlerStmt);
         }
     }
 
