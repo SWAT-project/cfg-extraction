@@ -95,6 +95,70 @@ class CFGVisualizer:
         self.graph = G
         return G
 
+    def _hierarchical_layout(self, graph, entry_node):
+        """
+        Create a hierarchical top-to-bottom layout for the CFG.
+
+        Nodes are arranged in layers based on their distance from the entry node.
+        Within each layer, nodes are spread horizontally.
+        """
+        # Compute layers using BFS from entry node
+        if entry_node not in graph:
+            # If no entry node, fall back to arbitrary root
+            if len(graph.nodes()) == 0:
+                return {}
+            entry_node = list(graph.nodes())[0]
+
+        # BFS to assign layers
+        layers = {}
+        visited = {entry_node}
+        queue = [(entry_node, 0)]
+        max_layer = 0
+
+        while queue:
+            node, layer = queue.pop(0)
+            layers[node] = layer
+            max_layer = max(max_layer, layer)
+
+            # Add successors to next layer
+            for successor in graph.successors(node):
+                if successor not in visited:
+                    visited.add(successor)
+                    queue.append((successor, layer + 1))
+
+        # Assign positions to unvisited nodes (unreachable from entry)
+        for node in graph.nodes():
+            if node not in layers:
+                layers[node] = max_layer + 1
+
+        # Group nodes by layer
+        nodes_by_layer = {}
+        for node, layer in layers.items():
+            if layer not in nodes_by_layer:
+                nodes_by_layer[layer] = []
+            nodes_by_layer[layer].append(node)
+
+        # Assign positions: y based on layer (top to bottom), x spread within layer
+        pos = {}
+        vertical_spacing = 6  # Large vertical space between layers
+        horizontal_spacing = 3  # Horizontal spacing between nodes in same layer
+
+        for layer, nodes in nodes_by_layer.items():
+            y = -layer * vertical_spacing  # Negative so it goes top to bottom
+            num_nodes = len(nodes)
+
+            # Spread nodes horizontally within the layer
+            if num_nodes == 1:
+                x_positions = [0]
+            else:
+                x_positions = [(i - (num_nodes - 1) / 2) * horizontal_spacing
+                              for i in range(num_nodes)]
+
+            for i, node in enumerate(sorted(nodes)):  # Sort for consistency
+                pos[node] = (x_positions[i], y)
+
+        return pos
+
     def visualize(self, output_path: Path = None, show: bool = True):
         """
         Visualize the CFG.
@@ -106,16 +170,17 @@ class CFGVisualizer:
         if self.graph is None:
             raise ValueError("Graph not built. Call build_graph() first.")
 
-        # Create figure
-        fig, ax = plt.subplots(figsize=(16, 12))
+        # Create figure with taller height for vertical layout
+        fig, ax = plt.subplots(figsize=(20, 24))
 
         # Use hierarchical layout for CFGs
+        entry_node = self.cfg_data.get('entryNodeId')
+
         try:
             pos = nx.nx_agraph.graphviz_layout(self.graph, prog='dot')
         except:
-            # Fallback to spring layout if graphviz not available
-            print("Warning: graphviz not available, using spring layout")
-            pos = nx.spring_layout(self.graph, k=2, iterations=50)
+            # Fallback to custom hierarchical layout
+            pos = self._hierarchical_layout(self.graph, entry_node)
 
         # Draw nodes
         entry_node = self.cfg_data.get('entryNodeId')
@@ -133,7 +198,7 @@ class CFGVisualizer:
 
         nx.draw_networkx_nodes(self.graph, pos,
                               node_color=node_colors,
-                              node_size=3000,
+                              node_size=4000,
                               node_shape='s',
                               alpha=0.9,
                               ax=ax)
@@ -158,6 +223,11 @@ class CFGVisualizer:
                                   alpha=0.7,
                                   arrows=True,
                                   arrowsize=20,
+                                  arrowstyle='->',
+                                  node_size=4000,  # Same as nodes for proper arrow termination
+                                  node_shape='s',
+                                  min_source_margin=15,
+                                  min_target_margin=15,
                                   ax=ax)
 
         # Draw edge labels for branches
@@ -172,14 +242,11 @@ class CFGVisualizer:
                                      font_size=8,
                                      ax=ax)
 
-        # Draw node labels (statement text)
+        # Draw node labels (node ID + statement type)
         labels = {}
         for node, data in self.graph.nodes(data=True):
-            stmt = data.get('statement', '')
-            # Further truncate for label
-            if len(stmt) > 30:
-                stmt = stmt[:27] + "..."
-            labels[node] = f"{node}\n{stmt}"
+            stmt_type = data.get('stmt_type', 'Unknown')
+            labels[node] = f"{node}\n{stmt_type}"
 
         nx.draw_networkx_labels(self.graph, pos,
                                labels=labels,
