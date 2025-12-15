@@ -1,13 +1,10 @@
 # Publishing to GitHub Packages
 
+Repository: https://github.com/SWAT-project/cfg-extraction
+
 ## Setup for Publishing
 
-1. **Update build.gradle**: Replace `OWNER/REPOSITORY` with your GitHub org/repo name:
-   ```groovy
-   url = uri("https://maven.pkg.github.com/YOUR-ORG/cfg-extractor")
-   ```
-
-2. **Create GitHub Token**:
+1. **Create GitHub Token**:
    - Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
    - Generate new token with `write:packages` and `read:packages` permissions
    - Save the token securely
@@ -16,18 +13,18 @@
 
    **Option A: Environment variables** (recommended for CI/CD)
    ```bash
-   export GITHUB_ACTOR=your-github-username
+   export GITHUB_ACTOR=nils-loose
    export GITHUB_TOKEN=your-github-token
    ```
 
    **Option B: gradle.properties** (for local development)
    Create `~/.gradle/gradle.properties`:
    ```properties
-   gpr.user=your-github-username
+   gpr.user=nils-loose
    gpr.token=your-github-token
    ```
 
-4. **Publish the package**:
+2. **Publish the package**:
    ```bash
    ./gradlew publish
    ```
@@ -41,7 +38,7 @@ repositories {
     mavenCentral()
     maven {
         name = "GitHubPackages"
-        url = uri("https://maven.pkg.github.com/YOUR-ORG/cfg-extractor")
+        url = uri("https://maven.pkg.github.com/SWAT-project/cfg-extraction")
         credentials {
             username = project.findProperty("gpr.user") ?: System.getenv("GITHUB_ACTOR")
             password = project.findProperty("gpr.token") ?: System.getenv("GITHUB_TOKEN")
