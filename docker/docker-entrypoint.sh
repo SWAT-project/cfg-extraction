@@ -112,7 +112,7 @@ case "$1" in
             if [ -f "$json_file" ]; then
                 filename=$(basename "$json_file" .json)
                 echo "Processing $filename..."
-                python3 /app/visualize/visualize_cfg.py "$json_file" --output "$OUTPUT_DIR/${filename}.png" || true
+                python3 /app/visualize/visualize_cfg.py "$json_file" "$OUTPUT_DIR/${filename}.png" || true
                 ((JSON_COUNT++))
             fi
         done
@@ -159,7 +159,7 @@ case "$1" in
                 if [ -f "$json_file" ]; then
                     filename=$(basename "$json_file" .json)
                     echo "Visualizing $filename..."
-                    python3 /app/visualize/visualize_cfg.py "$json_file" --output "$OUTPUT_DIR/graphs/${filename}.png" || true
+                    python3 /app/visualize/visualize_cfg.py "$json_file" "$OUTPUT_DIR/graphs/${filename}.png" || true
                 fi
             done
             echo "Visualization complete. Graphs in $OUTPUT_DIR/graphs/"

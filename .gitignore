@@ -22,6 +22,9 @@ gradlew.bat
 
 # Output
 output/
+target/
+cfg-results/
+cfg-output/
 
 # Python
 venv/
