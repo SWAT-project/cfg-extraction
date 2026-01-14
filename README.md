@@ -34,13 +34,39 @@ cfg-extractor/
 
 ## Quick Start
 
-### 1. Build the Project
+### Option 1: Using Docker (Recommended)
+
+**Build the Docker image:**
+```bash
+docker build -t cfg-extractor -f docker/Dockerfile .
+```
+
+**Extract and visualize CFGs:**
+```bash
+# Extract CFGs from compiled classes
+docker run -v $(pwd)/target/classes:/input -v $(pwd)/output:/output cfg-extractor \
+    extract /input /output
+
+# Visualize a specific CFG
+docker run -v $(pwd)/output:/output cfg-extractor \
+    visualize /output/Main_main.json --output /output/graph.png
+
+# Or do both in one command
+docker run -v $(pwd)/data:/data cfg-extractor \
+    all /data/classes /data/output --visualize-all
+```
+
+See [DOCKER.md](DOCKER.md) for complete Docker usage guide.
+
+### Option 2: Local Installation
+
+**1. Build the Project**
 
 ```bash
 ./gradlew build
 ```
 
-### 2. Extract CFGs
+**2. Extract CFGs**
 
 ```bash
 ./gradlew runAnalysis
@@ -53,7 +79,7 @@ This will:
 - Extract CFGs for all methods
 - Save JSON files to `output/` directory
 
-### 3. Visualize CFGs
+**3. Visualize CFGs**
 
 ```bash
 # Install Python dependencies
@@ -69,7 +95,25 @@ python visualize_cfg.py ../output/
 
 ## Usage
 
-### Java CFG Extraction
+### Docker Usage (Recommended)
+
+```bash
+# Extract CFGs
+docker run -v $(pwd)/input:/input -v $(pwd)/output:/output cfg-extractor \
+    extract /input /output [entry-class] [entry-method] [analysis-type]
+
+# Visualize CFG
+docker run -v $(pwd)/output:/output cfg-extractor \
+    visualize /output/Main_main.json --output /output/graph.png
+
+# Combined workflow
+docker run -v $(pwd)/data:/data cfg-extractor \
+    all /data/input /data/output --visualize-all
+```
+
+See [DOCKER.md](DOCKER.md) for detailed Docker usage, examples, and troubleshooting.
+
+### Local Java CFG Extraction
 
 ```bash
 java -jar build/libs/cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method]
@@ -86,7 +130,7 @@ java -jar build/libs/cfg-extractor.jar <input-path> <output-dir> [entry-class] [
 java -jar cfg-extractor.jar target/ output/ Main main
 ```
 
-### Python Visualization
+### Local Python Visualization
 
 ```bash
 # Visualize a single CFG

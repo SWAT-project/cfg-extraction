@@ -1,0 +1,39 @@
+# Build artifacts
+build/
+.gradle/
+*.jar
+*.class
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker/
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Output directories
+output/
+target/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# OS files
+.DS_Store
+Thumbs.db
