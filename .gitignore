@@ -1,13 +1,11 @@
 # Gradle
 .gradle/
 build/
-gradle/
-gradlew
-gradlew.bat
 
 # Java
 *.class
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 *.log
