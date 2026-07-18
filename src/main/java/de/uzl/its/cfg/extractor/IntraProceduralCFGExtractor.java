@@ -7,8 +7,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.graph.StmtGraph;
 import sootup.core.jimple.basic.Trap;
+import sootup.core.jimple.common.expr.JNewExpr;
 import sootup.core.jimple.common.stmt.BranchingStmt;
+import sootup.core.jimple.common.stmt.JAssignStmt;
 import sootup.core.jimple.common.stmt.JIfStmt;
+import sootup.core.jimple.common.stmt.JThrowStmt;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
@@ -41,12 +44,13 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
 
         Body body = method.getBody();
         StmtGraph<?> stmtGraph = body.getStmtGraph();
+        var stmts = stmtGraph.getStmts();
 
         // Create nodes for each statement
         Map<Stmt, String> stmtToId = new HashMap<>();
         int nodeCounter = 0;
 
-        for (Stmt stmt : stmtGraph.getStmts()) {
+        for (Stmt stmt : stmts) {
             String nodeId = "node_" + nodeCounter++;
             stmtToId.put(stmt, nodeId);
 
@@ -57,11 +61,10 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
 
         // Set entry node (first statement)
-        Collection<Stmt> startingStmts = stmtGraph.getNodes();
-        if (!startingStmts.isEmpty()) {
+        if (!stmts.isEmpty()) {
             // Find entry node: node with no predecessors
             boolean foundEntry = false;
-            for (Stmt stmt : startingStmts) {
+            for (Stmt stmt : stmts) {
                 if (stmtGraph.predecessors(stmt).isEmpty()) {
                     cfg.setEntryNode(stmtToId.get(stmt));
                     foundEntry = true;
@@ -74,7 +77,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
 
         // Create edges based on control flow
-        for (Stmt stmt : stmtGraph.getStmts()) {
+        for (Stmt stmt : stmts) {
             String sourceId = stmtToId.get(stmt);
             List<Stmt> successors = stmtGraph.successors(stmt).stream().toList();
 
@@ -88,14 +91,16 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 // Other branching statements (goto, switch, etc.)
                 for (Stmt successor : successors) {
                     String targetId = stmtToId.get(successor);
-                    assert targetId != null : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
+                    assert targetId != null
+                            : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
                     cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.NORMAL));
                 }
             } else {
                 // Normal flow
                 for (Stmt successor : successors) {
                     String targetId = stmtToId.get(successor);
-                    assert targetId != null : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
+                    assert targetId != null
+                            : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
                     cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.NORMAL));
                 }
             }
@@ -104,12 +109,36 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Handle exception flow
         handleExceptionFlow(stmtGraph, stmtToId, cfg);
 
+        // WIP: Find assertions
+        var assertionPointIds = new ArrayList<String>();
+        for (var throwStmt : stmts) {
+            if (throwStmt instanceof JThrowStmt) {
+                var thrownValue = throwStmt.getUses().get(0);
+
+                // find assignment of thrown value
+                for (var assignStmt : stmts) {
+                    if (assignStmt instanceof JAssignStmt) {
+                        var leftOp = ((JAssignStmt<?, ?>) assignStmt).getLeftOp();
+                        var rightOp = ((JAssignStmt<?, ?>) assignStmt).getRightOp();
+
+                        if (leftOp.equals(thrownValue) && rightOp instanceof JNewExpr) {
+                            var newExpr = (JNewExpr) rightOp;
+                            if (newExpr.getType().getFullyQualifiedName().equals("java.lang.AssertionError")) {
+                                assertionPointIds.add(stmtToId.get(assignStmt));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Add metadata
-        cfg.addMetadata("statementCount", stmtGraph.getStmts().size());
+        cfg.addMetadata("statementCount", stmts.size());
         cfg.addMetadata("localCount", body.getLocalCount());
+        cfg.addMetadata("assertionPointIds", assertionPointIds);
 
         logger.info("Extracted CFG with {} nodes and {} edges",
-                    cfg.getNodes().size(), cfg.getEdges().size());
+                cfg.getNodes().size(), cfg.getEdges().size());
 
         return cfg;
     }
@@ -132,8 +161,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
     }
 
     private void handleConditionalBranch(JIfStmt ifStmt, List<Stmt> successors,
-                                        String sourceId, Map<Stmt, String> stmtToId,
-                                        ControlFlowGraph cfg) {
+            String sourceId, Map<Stmt, String> stmtToId,
+            ControlFlowGraph cfg) {
         // For if statements, we have two successors:
         // - The target of the if (true branch)
         // - The fall-through (false branch)
@@ -144,7 +173,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         for (int i = 0; i < successors.size(); i++) {
             Stmt successor = successors.get(i);
             String targetId = stmtToId.get(successor);
-            assert targetId != null : "Successor statement not found in stmtToId map for conditional branch: " + successor + " (source: " + ifStmt + ")";
+            assert targetId != null : "Successor statement not found in stmtToId map for conditional branch: "
+                    + successor + " (source: " + ifStmt + ")";
 
             CFGEdge.EdgeType edgeType;
             String label;
@@ -165,7 +195,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
     }
 
     private void handleExceptionFlow(StmtGraph<?> stmtGraph, Map<Stmt, String> stmtToId,
-                                     ControlFlowGraph cfg) {
+            ControlFlowGraph cfg) {
         // Handle exception handlers (try-catch blocks)
         for (Trap trap : stmtGraph.getTraps()) {
             // Trap represents a try-catch block
