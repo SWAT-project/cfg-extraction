@@ -109,7 +109,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Handle exception flow
         handleExceptionFlow(stmtGraph, stmtToId, cfg);
 
-        // WIP: Find assertions
+        // Find assertions
         var assertionPointIds = new ArrayList<String>();
         for (var throwStmt : stmts) {
             if (throwStmt instanceof JThrowStmt) {

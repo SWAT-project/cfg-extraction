@@ -84,9 +84,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 ControlFlowGraph.AnalysisType.INTER_PROCEDURAL);
 
         // Extract CFG recursively starting from entry point
-        extractMethodRecursively(method, combinedCFG, 0, 5); // Max depth of 5
+        extractMethodRecursively(method, combinedCFG, 0, 5);
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
+        combinedCFG.addMetadata("methodCount", this.processedMethods.size());
 
         logger.info("Inter-procedural CFG extracted: {} nodes, {} edges",
                 combinedCFG.getNodes().size(),
@@ -99,8 +100,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             int depth, int maxDepth) {
         MethodSignature methodSig = method.getSignature();
 
-        // Prevent infinite recursion and re-processing
-        if (depth > maxDepth || processedMethods.contains(methodSig)) {
+        // Prevent re-processing
+        if (processedMethods.contains(methodSig)) {
             logger.debug("Skipping method (depth={}, processed={}): {}",
                     depth, processedMethods.contains(methodSig), methodSig);
             return;
@@ -114,12 +115,30 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             return;
         }
 
-        // Extract intra-procedural CFG
-        ControlFlowGraph methodCFG = intraExtractor.extractCFG(method, view);
-
         // Merge nodes into combined CFG with unique IDs
         Map<String, String> oldToNewId = new HashMap<>();
         String methodPrefix = "m" + processedMethods.size() + "_";
+
+        if (depth > maxDepth) {
+            var dummyId = methodPrefix + "dummy";
+            CFGNode dummyNode = new CFGNode(
+                    dummyId,
+                    "unknown",
+                    "DUMMY (depth limit)",
+                    -1);
+            dummyNode.setMetadata("method: " + methodSig.toString());
+            combinedCFG.addNode(dummyNode);
+
+            methodEntryNodes.put(methodSig, dummyId);
+            methodExitNodes.put(methodSig, Set.of(dummyId));
+
+            combinedCFG.addMetadata("isIncomplete", true);
+            this.assertionPointIds.add(dummyId);
+            return;
+        }
+
+        // Extract intra-procedural CFG
+        ControlFlowGraph methodCFG = intraExtractor.extractCFG(method, view);
 
         for (CFGNode node : methodCFG.getNodes()) {
             String newId = methodPrefix + node.getId();
@@ -134,7 +153,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             combinedCFG.addNode(newNode);
         }
 
-        // WIP: Combine assertions points
+        // Combine assertions points
         var methodAssertionPointIds = (Collection<?>) methodCFG.getMetadata().get("assertionPointIds");
         if (methodAssertionPointIds != null) {
             var newIds = methodAssertionPointIds.stream().map(oldToNewId::get).collect(Collectors.toList());

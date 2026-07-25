@@ -46,6 +46,7 @@ task runAnalysis(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'de.uzl.its.cfg.Main'
     args = ['target/', 'output/']
+    enableAssertions = true
 }
 
 // Create output directory
