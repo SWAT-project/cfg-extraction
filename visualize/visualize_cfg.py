@@ -56,7 +56,7 @@ class CFGVisualizer:
 
     def __init__(self):
         self.graph = None
-        self.cfg_data = None
+        self.cfg_data = {}
 
     def load_cfg(self, json_path: Path) -> Dict[str, Any]:
         """Load CFG from JSON file."""
@@ -347,6 +347,8 @@ class CFGVisualizer:
         """
         if self.graph is None:
             raise ValueError("Graph not built. Call build_graph() first.")
+        
+        assertionPointIds: list[str] = self.cfg_data.get("metadata", {}).get("assertionPointIds", [])
 
         # Create figure with taller height for vertical layout
         fig, ax = plt.subplots(figsize=(20, 24))
@@ -383,6 +385,8 @@ class CFGVisualizer:
                 node_colors.append('lightgreen')
             elif node in exit_nodes:
                 node_colors.append('lightcoral')
+            elif node in assertionPointIds:
+                node_colors.append('purple')
             else:
                 node_colors.append('lightblue')
 
