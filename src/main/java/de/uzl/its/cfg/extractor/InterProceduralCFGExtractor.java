@@ -17,6 +17,7 @@ import sootup.core.signatures.MethodSignature;
 import sootup.java.core.views.JavaView;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Extracts inter-procedural control flow graphs by connecting method calls.
@@ -36,13 +37,13 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private static final Logger logger = LoggerFactory.getLogger(InterProceduralCFGExtractor.class);
 
     private final IntraProceduralCFGExtractor intraExtractor;
-    private final CallGraph callGraph;
+    // private final CallGraph callGraph;
     private final JavaView view;
     private final Set<MethodSignature> processedMethods;
     private final Map<MethodSignature, String> methodEntryNodes;
     private final Map<MethodSignature, Set<String>> methodExitNodes;
+    private final List<String> assertionPointIds;
     private final Set<String> methodBlacklist;
-    private int nodeCounter;
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.intraExtractor = new IntraProceduralCFGExtractor();
@@ -50,8 +51,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         this.processedMethods = new HashSet<>();
         this.methodEntryNodes = new HashMap<>();
         this.methodExitNodes = new HashMap<>();
+        this.assertionPointIds = new ArrayList<>();
         this.methodBlacklist = new HashSet<>();
-        this.nodeCounter = 0;
 
         // Configure default blacklist (methods to not expand even if available)
         // These methods will have statement nodes but no CALL/RETURN edges
@@ -60,8 +61,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         this.methodBlacklist.add("java.util.");
 
         // Build call graph using Class Hierarchy Analysis
-        logger.info("Building call graph with {} entry points", entryPoints.size());
-        CallGraphAlgorithm cga = new ClassHierarchyAnalysisAlgorithm(view);
+        // logger.info("Building call graph with {} entry points", entryPoints.size());
+        // CallGraphAlgorithm cga = new ClassHierarchyAnalysisAlgorithm(view);
 
         // Convert SootMethods to MethodSignatures
         List<MethodSignature> entryPointSigs = new ArrayList<>();
@@ -69,8 +70,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             entryPointSigs.add(m.getSignature());
         }
 
-        this.callGraph = cga.initialize(entryPointSigs);
-        logger.info("Call graph built successfully");
+        // this.callGraph = cga.initialize(entryPointSigs);
+        // logger.info("Call graph built successfully");
     }
 
     @Override
@@ -78,29 +79,30 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         logger.info("Extracting inter-procedural CFG starting from: {}", method.getSignature());
 
         ControlFlowGraph combinedCFG = new ControlFlowGraph(
-            method.getSignature().toString(),
-            method.getDeclaringClassType().getClassName(),
-            ControlFlowGraph.AnalysisType.INTER_PROCEDURAL
-        );
+                method.getSignature().toString(),
+                method.getDeclaringClassType().getClassName(),
+                ControlFlowGraph.AnalysisType.INTER_PROCEDURAL);
 
         // Extract CFG recursively starting from entry point
         extractMethodRecursively(method, combinedCFG, 0, 5); // Max depth of 5
 
+        combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
+
         logger.info("Inter-procedural CFG extracted: {} nodes, {} edges",
-                   combinedCFG.getNodes().size(),
-                   combinedCFG.getEdges().size());
+                combinedCFG.getNodes().size(),
+                combinedCFG.getEdges().size());
 
         return combinedCFG;
     }
 
     private void extractMethodRecursively(SootMethod method, ControlFlowGraph combinedCFG,
-                                         int depth, int maxDepth) {
+            int depth, int maxDepth) {
         MethodSignature methodSig = method.getSignature();
 
         // Prevent infinite recursion and re-processing
         if (depth > maxDepth || processedMethods.contains(methodSig)) {
             logger.debug("Skipping method (depth={}, processed={}): {}",
-                        depth, processedMethods.contains(methodSig), methodSig);
+                    depth, processedMethods.contains(methodSig), methodSig);
             return;
         }
 
@@ -124,13 +126,19 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             oldToNewId.put(node.getId(), newId);
 
             CFGNode newNode = new CFGNode(
-                newId,
-                node.getStatement(),
-                node.getStmtType(),
-                node.getLineNumber()
-            );
+                    newId,
+                    node.getStatement(),
+                    node.getStmtType(),
+                    node.getLineNumber());
             newNode.setMetadata("method: " + methodSig.toString());
             combinedCFG.addNode(newNode);
+        }
+
+        // WIP: Combine assertions points
+        var methodAssertionPointIds = (Collection<?>) methodCFG.getMetadata().get("assertionPointIds");
+        if (methodAssertionPointIds != null) {
+            var newIds = methodAssertionPointIds.stream().map(oldToNewId::get).collect(Collectors.toList());
+            this.assertionPointIds.addAll(newIds);
         }
 
         // Track entry and exit nodes for this method
@@ -158,11 +166,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             String newTarget = oldToNewId.get(edge.getTarget());
 
             combinedCFG.addEdge(new CFGEdge(
-                newSource,
-                newTarget,
-                edge.getType(),
-                edge.getLabel()
-            ));
+                    newSource,
+                    newTarget,
+                    edge.getType(),
+                    edge.getLabel()));
         }
 
         // Find call sites and add inter-procedural edges
@@ -176,7 +183,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // Get the node ID for this call site
                 String callSiteId = findNodeForStatement(methodCFG, stmt, oldToNewId);
 
-                assert callSiteId != null : "Failed to find CFG node for call site statement: " + stmt + " in method: " + methodSig;
+                assert callSiteId != null
+                        : "Failed to find CFG node for call site statement: " + stmt + " in method: " + methodSig;
 
                 // Find callees using call graph
                 Set<MethodSignature> callees = getCallees(method, stmt);
@@ -208,32 +216,30 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                         // 3. Has no body
                         // In all these cases, we should fail fast to identify the issue
                         assert calleeEntry != null : "Failed to get entry node for callee: " + calleeSig +
-                            " (depth=" + depth + ", already processed=" + processedMethods.contains(calleeSig) +
-                            ", has body=" + callee.hasBody() + ")";
+                                " (depth=" + depth + ", already processed=" + processedMethods.contains(calleeSig) +
+                                ", has body=" + callee.hasBody() + ")";
 
                         CFGEdge callEdge = new CFGEdge(
-                            callSiteId,
-                            calleeEntry,
-                            CFGEdge.EdgeType.CALL,
-                            callee.getName()
-                        );
+                                callSiteId,
+                                calleeEntry,
+                                CFGEdge.EdgeType.CALL,
+                                callee.getName());
                         combinedCFG.addEdge(callEdge);
 
                         // Add RETURN edges from callee exits to return site
                         String returnSiteId = findReturnSite(stmts, i, methodCFG, oldToNewId);
 
                         assert returnSiteId != null : "Failed to find return site for call at statement: " + stmt +
-                            " in method: " + methodSig + " (call to: " + calleeSig + ")";
+                                " in method: " + methodSig + " (call to: " + calleeSig + ")";
 
                         Set<String> calleeExits = methodExitNodes.get(calleeSig);
                         assert calleeExits != null : "Failed to get exit nodes for callee: " + calleeSig;
 
                         for (String exitId : calleeExits) {
                             CFGEdge returnEdge = new CFGEdge(
-                                exitId,
-                                returnSiteId,
-                                CFGEdge.EdgeType.RETURN
-                            );
+                                    exitId,
+                                    returnSiteId,
+                                    CFGEdge.EdgeType.RETURN);
                             combinedCFG.addEdge(returnEdge);
                         }
                     } else {
@@ -269,7 +275,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         }
 
         // If isCallSite() returned true, invokeExpr should not be null
-        assert invokeExpr != null : "Failed to extract invoke expression from call site: " + callSite + " in method: " + caller.getSignature();
+        assert invokeExpr != null : "Failed to extract invoke expression from call site: " + callSite + " in method: "
+                + caller.getSignature();
 
         // Get the specific method being invoked at this call site
         MethodSignature targetMethod = invokeExpr.getMethodSignature();
@@ -293,7 +300,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     }
 
     private String findReturnSite(List<Stmt> stmts, int callSiteIndex,
-                                  ControlFlowGraph cfg, Map<String, String> idMapping) {
+            ControlFlowGraph cfg, Map<String, String> idMapping) {
         // Return site should be the CFG successor of the call site, not just the next statement
         // Find the call site statement
         Stmt callSite = stmts.get(callSiteIndex);
@@ -315,7 +322,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                     // Map the target to NEW ID
                     String oldTargetId = edge.getTarget();
                     String newTargetId = idMapping.get(oldTargetId);
-                    assert newTargetId != null : "Failed to map return site node ID: " + oldTargetId + " (call site: " + callSite + ")";
+                    assert newTargetId != null
+                            : "Failed to map return site node ID: " + oldTargetId + " (call site: " + callSite + ")";
                     return newTargetId;
                 }
             }
