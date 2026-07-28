@@ -3,11 +3,10 @@ package de.uzl.its.cfg.extractor;
 import de.uzl.its.cfg.model.CFGEdge;
 import de.uzl.its.cfg.model.CFGNode;
 import de.uzl.its.cfg.model.ControlFlowGraph;
+import de.uzl.its.cfg.model.CFGEdge.EdgeType;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sootup.callgraph.CallGraph;
-import sootup.callgraph.CallGraphAlgorithm;
-import sootup.callgraph.ClassHierarchyAnalysisAlgorithm;
 import sootup.core.jimple.common.expr.AbstractInvokeExpr;
 import sootup.core.jimple.common.stmt.JAssignStmt;
 import sootup.core.jimple.common.stmt.Stmt;
@@ -244,6 +243,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                                 CFGEdge.EdgeType.CALL,
                                 callee.getName());
                         combinedCFG.addEdge(callEdge);
+                        // Remove normal/fallthrough edge
+                        combinedCFG.removeEdges(
+                                combinedCFG.getEdges().stream().filter(
+                                        e -> e.getSource().equals(callSiteId) && e.getType().equals(EdgeType.NORMAL))
+                                        .toList());
 
                         // Add RETURN edges from callee exits to return site
                         String returnSiteId = findReturnSite(stmts, i, methodCFG, oldToNewId);
