@@ -167,9 +167,9 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // - The target of the if (true branch)
         // - The fall-through (false branch)
 
-        // Label successors based on position
-        // First successor is typically the true branch (target)
-        // Second successor is the fall-through (false branch)
+        // Label successors based on position (see JavaDoc of JIfStmt)
+        // First successor is the fall-through (false branch)
+        // Second successor is the true branch (target)
         for (int i = 0; i < successors.size(); i++) {
             Stmt successor = successors.get(i);
             String targetId = stmtToId.get(successor);
@@ -180,13 +180,13 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             String label;
 
             if (i == 0) {
-                // First successor: true branch
-                edgeType = CFGEdge.EdgeType.TRUE_BRANCH;
-                label = "true";
-            } else {
-                // Other successors: false branch
+                // First successor: false branch
                 edgeType = CFGEdge.EdgeType.FALSE_BRANCH;
                 label = "false";
+            } else {
+                // Other successors: true branch
+                edgeType = CFGEdge.EdgeType.TRUE_BRANCH;
+                label = "true";
             }
 
             CFGEdge edge = new CFGEdge(sourceId, targetId, edgeType, label);
