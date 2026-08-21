@@ -49,6 +49,26 @@ task runAnalysis(type: JavaExec) {
     enableAssertions = true
 }
 
+// Self-contained executable jar (bundles all runtime dependencies)
+task fatJar(type: Jar) {
+    group = 'build'
+    description = 'Build an executable jar with all dependencies bundled'
+    archiveClassifier = 'all'
+    manifest {
+        attributes 'Main-Class': application.mainClass
+    }
+    from sourceSets.main.output
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    // Dependency jars overlap on these; keeping any one copy breaks jar signature
+    // verification and the JPMS descriptors are meaningless on the classpath.
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'module-info.class'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+build.dependsOn fatJar
+
 // Create output directory
 task createOutputDir {
     doLast {
