@@ -13,6 +13,8 @@ import sootup.core.jimple.common.stmt.JThrowStmt;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
+import sootup.core.types.ClassType;
+import sootup.java.core.exceptions.StmtExceptionAnalyzer;
 import sootup.java.core.views.JavaView;
 
 import java.util.*;
@@ -63,15 +65,24 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Set entry node (first statement)
         cfg.setEntryNode(stmtToId.get(stmtGraph.getStartingStmt()));
 
+        StmtExceptionAnalyzer exceptionAnalyzer = new StmtExceptionAnalyzer(view.getTypeHierarchy());
+
         // Create edges based on control flow
         for (Stmt stmt : stmts) {
             String sourceId = stmtToId.get(stmt);
             List<Stmt> successors = stmtGraph.successors(stmt);
+            Set<ClassType> possibleExceptions = new HashSet<>(
+                    exceptionAnalyzer.mightThrow(stmt, stmtGraph).getExceptions());
+            // TODO: SootUp is bugged and mightThrow() can fail with a NPE. Figure out what to do in this case.
+            // also, how does SWAT even find ArrayIndex bugs right now, if they dont have an explicit check & throw in the bytecode??
+            Map<ClassType, Stmt> exceptionHandlers = stmtGraph.exceptionalSuccessors(stmt);
 
-            if (stmt instanceof JThrowStmt) {
+            possibleExceptions.retainAll(exceptionHandlers.keySet());
+            if (!possibleExceptions.isEmpty()) {
                 // Exception flow
-                for (Stmt successor : stmtGraph.exceptionalSuccessors(stmt).values()) {
-                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.EXCEPTION));
+                for (ClassType exception : possibleExceptions) {
+                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(exceptionHandlers.get(exception)),
+                            CFGEdge.EdgeType.EXCEPTION));
                 }
             } else if (successors.isEmpty()) {
                 // This is an exit node (return, throw, etc.)
