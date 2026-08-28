@@ -61,27 +61,19 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
 
         // Set entry node (first statement)
-        if (!stmts.isEmpty()) {
-            // Find entry node: node with no predecessors
-            boolean foundEntry = false;
-            for (Stmt stmt : stmts) {
-                if (stmtGraph.predecessors(stmt).isEmpty()) {
-                    cfg.setEntryNode(stmtToId.get(stmt));
-                    foundEntry = true;
-                    break;
-                }
-            }
-            assert foundEntry : "Failed to find entry node (no statement with no predecessors) in method: " + methodSig;
-        } else {
-            throw new AssertionError("Method has no statements in statement graph: " + methodSig);
-        }
+        cfg.setEntryNode(stmtToId.get(stmtGraph.getStartingStmt()));
 
         // Create edges based on control flow
         for (Stmt stmt : stmts) {
             String sourceId = stmtToId.get(stmt);
-            List<Stmt> successors = stmtGraph.successors(stmt).stream().toList();
+            List<Stmt> successors = stmtGraph.successors(stmt);
 
-            if (successors.isEmpty()) {
+            if (stmt instanceof JThrowStmt) {
+                // Exception flow
+                for (Stmt successor : stmtGraph.exceptionalSuccessors(stmt).values()) {
+                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.EXCEPTION));
+                }
+            } else if (successors.isEmpty()) {
                 // This is an exit node (return, throw, etc.)
                 cfg.addExitNode(sourceId);
             } else if (stmt instanceof JIfStmt) {
@@ -90,25 +82,15 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             } else if (stmt instanceof BranchingStmt) {
                 // Other branching statements (goto, switch, etc.)
                 for (Stmt successor : successors) {
-                    String targetId = stmtToId.get(successor);
-                    assert targetId != null
-                            : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
-                    cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.NORMAL));
+                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.NORMAL));
                 }
             } else {
                 // Normal flow
                 for (Stmt successor : successors) {
-                    String targetId = stmtToId.get(successor);
-                    assert targetId != null
-                            : "Successor statement not found in stmtToId map: " + successor + " (source: " + stmt + ")";
-                    cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.NORMAL));
+                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.NORMAL));
                 }
             }
         }
-
-        // TODO: exception flow is disabled pending a rewrite for SootUp 3.x. Traps are no
-        // longer readable from a resolved body; use stmtGraph.exceptionalSuccessors(stmt) instead.
-        // handleExceptionFlow(stmtGraph, stmtToId, cfg);
 
         // Find assertions
         var assertionPointIds = new ArrayList<String>();
@@ -192,31 +174,6 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             cfg.addEdge(edge);
         }
     }
-
-    // TODO: port to SootUp 3.x. StmtGraph.getTraps() is gone -- Trap (now
-    // sootup.core.jimple.common.Trap) is only an input to graph construction, and a body's
-    // ControlFlowGraph is immutable. Exception edges must instead be read per statement via
-    // exceptionalSuccessors(stmt), which returns a Map<ClassType, Stmt> of exception type to
-    // handler. That is closer to what the note below asked for anyway.
-    //
-    // private void handleExceptionFlow(sootup.core.graph.ControlFlowGraph<?> stmtGraph,
-    //         Map<Stmt, String> stmtToId, ControlFlowGraph cfg) {
-    //     // Handle exception handlers (try-catch blocks)
-    //     for (Trap trap : stmtGraph.getTraps()) {
-    //         // Trap represents a try-catch block
-    //         // From any statement in the try block, there's a potential exception edge to the handler
-    //
-    //         Stmt handlerStmt = trap.getHandlerStmt();
-    //         String handlerId = stmtToId.get(handlerStmt);
-    //
-    //         assert handlerId != null : "Exception handler statement not found in stmtToId map: " + handlerStmt;
-    //
-    //         // Add exception edges from protected statements to handler
-    //         // Note: This is a simplified version. A more complete version would
-    //         // add edges from each protected statement.
-    //         logger.warn("Found exception handler for {} at {}: {}", trap.getExceptionType(), handlerId, handlerStmt);
-    //     }
-    // }
 
     @Override
     public ControlFlowGraph.AnalysisType getAnalysisType() {
