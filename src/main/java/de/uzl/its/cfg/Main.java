@@ -10,13 +10,11 @@ import de.uzl.its.cfg.serializer.MetadataJsonSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.inputlocation.AnalysisInputLocation;
-import sootup.core.model.SootClass;
 import sootup.core.model.SootMethod;
-import sootup.core.signatures.MethodSignature;
-import sootup.java.bytecode.inputlocation.JavaClassPathAnalysisInputLocation;
+import sootup.core.model.SourceType;
+import sootup.java.bytecode.frontend.inputlocation.JavaClassPathAnalysisInputLocation;
 import sootup.java.core.JavaIdentifierFactory;
-import sootup.java.core.JavaProject;
-import sootup.java.core.language.JavaLanguage;
+import sootup.java.core.JavaSootClass;
 import sootup.java.core.types.JavaClassType;
 import sootup.java.core.views.JavaView;
 
@@ -25,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -79,34 +78,31 @@ public class Main {
     }
 
     private static void extractCFGs(String inputPath, Path outputDir,
-                                    String entryClassName, String entryMethodName,
-                                    String analysisType) throws IOException {
+            String entryClassName, String entryMethodName,
+            String analysisType) throws IOException {
 
         // Step 1: Create SootUp View for bytecode analysis
         logger.info("Creating SootUp view for bytecode analysis...");
-        AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(inputPath);
+        AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(inputPath, SourceType.Application,
+                List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */);
 
-        JavaProject project = JavaProject.builder(new JavaLanguage(8))
-                .addInputLocation(inputLocation)
-                .build();
-
-        JavaView view = project.createView();
+        JavaView view = new JavaView(inputLocation);
         logger.info("SootUp view created successfully");
 
         // Step 2: Get all classes in the analysis scope
         logger.info("Discovering classes...");
-        JavaIdentifierFactory identifierFactory = (JavaIdentifierFactory) view.getIdentifierFactory();
+        JavaIdentifierFactory identifierFactory = view.getIdentifierFactory();
 
         // Start with the entry class
         JavaClassType entryClassType = identifierFactory.getClassType(entryClassName);
-        Optional<? extends SootClass<?>> entryClassOpt = view.getClass(entryClassType);
+        Optional<JavaSootClass> entryClassOpt = view.getClass(entryClassType);
 
         if (!entryClassOpt.isPresent()) {
             logger.error("Entry class not found: {}", entryClassName);
             throw new RuntimeException("Entry class not found: " + entryClassName);
         }
 
-        SootClass<?> entryClass = entryClassOpt.get();
+        JavaSootClass entryClass = entryClassOpt.get();
         logger.info("Found entry class: {}", entryClass.getType());
 
         // Get the entry method
@@ -128,7 +124,8 @@ public class Main {
         if (analysisType.equalsIgnoreCase("inter")) {
             // Inter-procedural analysis: create single CFG with all reachable methods
             logger.info("Using inter-procedural analysis");
-            InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view, Collections.singletonList(entryMethod));
+            InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view,
+                    Collections.singletonList(entryMethod));
 
             // Extract single inter-procedural CFG
             ControlFlowGraph cfg = interExtractor.extractCFG(entryMethod, view);
@@ -167,33 +164,33 @@ public class Main {
 
             int methodCount = 0;
             for (SootMethod method : entryClass.getMethods()) {
-            try {
-                logger.info("Processing method: {}", method.getSignature());
+                try {
+                    logger.info("Processing method: {}", method.getSignature());
 
-                ControlFlowGraph cfg = extractor.extractCFG(method, view);
+                    ControlFlowGraph cfg = extractor.extractCFG(method, view);
 
-                // Generate output filename
-                String methodName = method.getName();
-                String safeMethodName = methodName.replace("<", "").replace(">", "");
-                String filename = String.format("%s_%s.json",
-                        entryClass.getType().getClassName(),
-                        safeMethodName);
+                    // Generate output filename
+                    String methodName = method.getName();
+                    String safeMethodName = methodName.replace("<", "").replace(">", "");
+                    String filename = String.format("%s_%s.json",
+                            entryClass.getType().getClassName(),
+                            safeMethodName);
 
-                Path outputFile = outputDir.resolve(filename);
-                serializer.serialize(cfg, outputFile);
+                    Path outputFile = outputDir.resolve(filename);
+                    serializer.serialize(cfg, outputFile);
 
-                methodCount++;
-                logger.info("Saved CFG to: {}", outputFile.getFileName());
+                    methodCount++;
+                    logger.info("Saved CFG to: {}", outputFile.getFileName());
 
-            } catch (Exception e) {
-                logger.warn("Failed to process method {}: {}",
-                           method.getSignature(), e.getMessage());
-            }
+                } catch (Exception e) {
+                    logger.warn("Failed to process method {}: {}",
+                            method.getSignature(), e.getMessage());
+                }
             }
 
             // Step 4: Also extract CFGs for other classes found
             logger.info("Extracting CFGs for all discovered classes...");
-            for (SootClass<?> sootClass : view.getClasses()) {
+            for (JavaSootClass sootClass : view.getClasses().toList()) {
                 // Skip the entry class (already processed)
                 if (sootClass.equals(entryClass)) {
                     continue;
@@ -217,7 +214,7 @@ public class Main {
 
                     } catch (Exception e) {
                         logger.warn("Failed to process method {}: {}",
-                                   method.getSignature(), e.getMessage());
+                                method.getSignature(), e.getMessage());
                     }
                 }
             }
@@ -230,7 +227,8 @@ public class Main {
         System.out.println("CFG Extractor - Extract Control Flow Graphs from Java bytecode");
         System.out.println();
         System.out.println("Usage:");
-        System.out.println("  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type]");
+        System.out.println(
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");

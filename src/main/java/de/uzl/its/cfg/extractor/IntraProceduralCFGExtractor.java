@@ -5,8 +5,6 @@ import de.uzl.its.cfg.model.CFGNode;
 import de.uzl.its.cfg.model.ControlFlowGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sootup.core.graph.StmtGraph;
-import sootup.core.jimple.basic.Trap;
 import sootup.core.jimple.common.expr.JNewExpr;
 import sootup.core.jimple.common.stmt.BranchingStmt;
 import sootup.core.jimple.common.stmt.JAssignStmt;
@@ -43,7 +41,9 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
 
         Body body = method.getBody();
-        StmtGraph<?> stmtGraph = body.getStmtGraph();
+        // SootUp's StmtGraph was renamed to sootup.core.graph.ControlFlowGraph in 3.0.0;
+        // it is fully qualified here because the name clashes with our own model class.
+        sootup.core.graph.ControlFlowGraph<?> stmtGraph = body.getControlFlowGraph();
         var stmts = stmtGraph.getStmts();
 
         // Create nodes for each statement
@@ -106,8 +106,9 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             }
         }
 
-        // Handle exception flow
-        handleExceptionFlow(stmtGraph, stmtToId, cfg);
+        // TODO: exception flow is disabled pending a rewrite for SootUp 3.x. Traps are no
+        // longer readable from a resolved body; use stmtGraph.exceptionalSuccessors(stmt) instead.
+        // handleExceptionFlow(stmtGraph, stmtToId, cfg);
 
         // Find assertions
         var assertionPointIds = new ArrayList<String>();
@@ -118,8 +119,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 // find assignment of thrown value
                 for (var assignStmt : stmts) {
                     if (assignStmt instanceof JAssignStmt) {
-                        var leftOp = ((JAssignStmt<?, ?>) assignStmt).getLeftOp();
-                        var rightOp = ((JAssignStmt<?, ?>) assignStmt).getRightOp();
+                        var leftOp = ((JAssignStmt) assignStmt).getLeftOp();
+                        var rightOp = ((JAssignStmt) assignStmt).getRightOp();
 
                         if (leftOp.equals(thrownValue) && rightOp instanceof JNewExpr) {
                             var newExpr = (JNewExpr) rightOp;
@@ -167,9 +168,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // - The target of the if (true branch)
         // - The fall-through (false branch)
 
-        // Label successors based on position (see JavaDoc of JIfStmt)
-        // First successor is the fall-through (false branch)
-        // Second successor is the true branch (target)
+        // Label successors by their index, which JIfStmt pins down: the fall-through
+        // (false branch) comes first, the branch target (true branch) second.
         for (int i = 0; i < successors.size(); i++) {
             Stmt successor = successors.get(i);
             String targetId = stmtToId.get(successor);
@@ -179,12 +179,11 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             CFGEdge.EdgeType edgeType;
             String label;
 
-            if (i == 0) {
-                // First successor: false branch
+            if (i == JIfStmt.FALSE_BRANCH_IDX) {
                 edgeType = CFGEdge.EdgeType.FALSE_BRANCH;
                 label = "false";
             } else {
-                // Other successors: true branch
+                // JIfStmt.TRUE_BRANCH_IDX and any further successors: true branch
                 edgeType = CFGEdge.EdgeType.TRUE_BRANCH;
                 label = "true";
             }
@@ -194,24 +193,30 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
     }
 
-    private void handleExceptionFlow(StmtGraph<?> stmtGraph, Map<Stmt, String> stmtToId,
-            ControlFlowGraph cfg) {
-        // Handle exception handlers (try-catch blocks)
-        for (Trap trap : stmtGraph.getTraps()) {
-            // Trap represents a try-catch block
-            // From any statement in the try block, there's a potential exception edge to the handler
-
-            Stmt handlerStmt = trap.getHandlerStmt();
-            String handlerId = stmtToId.get(handlerStmt);
-
-            assert handlerId != null : "Exception handler statement not found in stmtToId map: " + handlerStmt;
-
-            // Add exception edges from protected statements to handler
-            // Note: This is a simplified version. A more complete version would
-            // add edges from each protected statement.
-            logger.debug("Found exception handler at: {}", handlerStmt);
-        }
-    }
+    // TODO: port to SootUp 3.x. StmtGraph.getTraps() is gone -- Trap (now
+    // sootup.core.jimple.common.Trap) is only an input to graph construction, and a body's
+    // ControlFlowGraph is immutable. Exception edges must instead be read per statement via
+    // exceptionalSuccessors(stmt), which returns a Map<ClassType, Stmt> of exception type to
+    // handler. That is closer to what the note below asked for anyway.
+    //
+    // private void handleExceptionFlow(sootup.core.graph.ControlFlowGraph<?> stmtGraph,
+    //         Map<Stmt, String> stmtToId, ControlFlowGraph cfg) {
+    //     // Handle exception handlers (try-catch blocks)
+    //     for (Trap trap : stmtGraph.getTraps()) {
+    //         // Trap represents a try-catch block
+    //         // From any statement in the try block, there's a potential exception edge to the handler
+    //
+    //         Stmt handlerStmt = trap.getHandlerStmt();
+    //         String handlerId = stmtToId.get(handlerStmt);
+    //
+    //         assert handlerId != null : "Exception handler statement not found in stmtToId map: " + handlerStmt;
+    //
+    //         // Add exception edges from protected statements to handler
+    //         // Note: This is a simplified version. A more complete version would
+    //         // add edges from each protected statement.
+    //         logger.warn("Found exception handler for {} at {}: {}", trap.getExceptionType(), handlerId, handlerStmt);
+    //     }
+    // }
 
     @Override
     public ControlFlowGraph.AnalysisType getAnalysisType() {

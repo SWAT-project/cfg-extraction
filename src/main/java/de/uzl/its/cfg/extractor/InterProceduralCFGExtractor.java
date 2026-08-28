@@ -8,7 +8,6 @@ import de.uzl.its.cfg.model.CFGEdge.EdgeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.jimple.common.expr.AbstractInvokeExpr;
-import sootup.core.jimple.common.stmt.JAssignStmt;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
@@ -192,7 +191,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         // Find call sites and add inter-procedural edges
         Body body = method.getBody();
-        List<Stmt> stmts = new ArrayList<>(body.getStmtGraph().getStmts());
+        List<Stmt> stmts = new ArrayList<>(body.getControlFlowGraph().getStmts());
 
         for (int i = 0; i < stmts.size(); i++) {
             Stmt stmt = stmts.get(i);
@@ -274,35 +273,30 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     }
 
     private boolean isCallSite(Stmt stmt) {
-        // Check if statement contains an invoke expression
-        if (stmt instanceof JAssignStmt) {
-            JAssignStmt assign = (JAssignStmt) stmt;
-            return assign.getRightOp() instanceof AbstractInvokeExpr;
+        // Check if statement contains an invoke expression. JAssignStmt and JInvokeStmt both
+        // implement InvokableStmt, which reports the invoke expression if there is one.
+        return getInvokeExpr(stmt).isPresent();
+    }
+
+    private Optional<AbstractInvokeExpr> getInvokeExpr(Stmt stmt) {
+        if (!stmt.isInvokableStmt()) {
+            return Optional.empty();
         }
-        // Check if statement contains invoke (using containsInvokeExpr)
-        return stmt.containsInvokeExpr();
+        return stmt.asInvokableStmt().getInvokeExpr();
     }
 
     private Set<MethodSignature> getCallees(SootMethod caller, Stmt callSite) {
         Set<MethodSignature> callees = new HashSet<>();
 
         // Extract the invoke expression from the call site
-        AbstractInvokeExpr invokeExpr = null;
-        if (callSite instanceof JAssignStmt) {
-            JAssignStmt assign = (JAssignStmt) callSite;
-            if (assign.getRightOp() instanceof AbstractInvokeExpr) {
-                invokeExpr = (AbstractInvokeExpr) assign.getRightOp();
-            }
-        } else if (callSite.containsInvokeExpr()) {
-            invokeExpr = callSite.getInvokeExpr();
-        }
+        Optional<AbstractInvokeExpr> invokeExpr = getInvokeExpr(callSite);
 
-        // If isCallSite() returned true, invokeExpr should not be null
-        assert invokeExpr != null : "Failed to extract invoke expression from call site: " + callSite + " in method: "
-                + caller.getSignature();
+        // If isCallSite() returned true, invokeExpr should be present
+        assert invokeExpr.isPresent() : "Failed to extract invoke expression from call site: " + callSite
+                + " in method: " + caller.getSignature();
 
         // Get the specific method being invoked at this call site
-        MethodSignature targetMethod = invokeExpr.getMethodSignature();
+        MethodSignature targetMethod = invokeExpr.get().getMethodSignature();
         callees.add(targetMethod);
 
         return callees;

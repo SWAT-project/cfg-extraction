@@ -7,8 +7,9 @@ plugins {
 group = 'de.uzl.its'
 version = '1.0-SNAPSHOT'
 
-sourceCompatibility = '11'
-targetCompatibility = '11'
+// SootUp 3.x is compiled for Java 17 (class file major version 61)
+sourceCompatibility = '17'
+targetCompatibility = '17'
 
 repositories {
     mavenCentral()
@@ -18,11 +19,14 @@ repositories {
 
 dependencies {
     // SootUp dependencies
-    implementation 'org.soot-oss:sootup.core:1.1.2'
-    implementation 'org.soot-oss:sootup.java.core:1.1.2'
-    implementation 'org.soot-oss:sootup.java.bytecode:1.1.2'
-    implementation 'org.soot-oss:sootup.callgraph:1.1.2'
-    implementation 'org.soot-oss:sootup.analysis:1.1.2'
+    // Note: two artifacts were renamed in SootUp 2.0.0:
+    //   sootup.java.bytecode -> sootup.java.bytecode.frontend
+    //   sootup.analysis      -> sootup.analysis.interprocedural
+    implementation 'org.soot-oss:sootup.core:3.0.1'
+    implementation 'org.soot-oss:sootup.java.core:3.0.1'
+    implementation 'org.soot-oss:sootup.java.bytecode.frontend:3.0.1'
+    implementation 'org.soot-oss:sootup.callgraph:3.0.1'
+    implementation 'org.soot-oss:sootup.analysis.interprocedural:3.0.1'
 
     // JSON serialization
     implementation 'com.google.code.gson:gson:2.10.1'
