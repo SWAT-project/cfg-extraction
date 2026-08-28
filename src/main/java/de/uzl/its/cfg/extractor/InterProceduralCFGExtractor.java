@@ -213,6 +213,13 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                         continue;
                     }
 
+                    // The view contains the JDK (needed for type hierarchy resolution only), so
+                    // library methods now resolve. Only expand methods from the analysed input path.
+                    if (!isApplicationMethod(calleeSig)) {
+                        logger.debug("Skipping library method: {}", calleeSig);
+                        continue;
+                    }
+
                     Optional<? extends SootMethod> calleeOpt = view.getMethod(calleeSig);
 
                     if (calleeOpt.isPresent()) {
@@ -270,6 +277,12 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 }
             }
         }
+    }
+
+    private boolean isApplicationMethod(MethodSignature methodSig) {
+        return view.getClass(methodSig.getDeclClassType())
+                .map(sootClass -> sootClass.isApplicationClass())
+                .orElse(false);
     }
 
     private boolean isCallSite(Stmt stmt) {

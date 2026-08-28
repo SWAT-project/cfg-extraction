@@ -13,6 +13,7 @@ import sootup.core.inputlocation.AnalysisInputLocation;
 import sootup.core.model.SootMethod;
 import sootup.core.model.SourceType;
 import sootup.java.bytecode.frontend.inputlocation.JavaClassPathAnalysisInputLocation;
+import sootup.java.bytecode.frontend.inputlocation.JrtFileSystemAnalysisInputLocation;
 import sootup.java.core.JavaIdentifierFactory;
 import sootup.java.core.JavaSootClass;
 import sootup.java.core.types.JavaClassType;
@@ -86,7 +87,13 @@ public class Main {
         AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(inputPath, SourceType.Application,
                 List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */);
 
-        JavaView view = new JavaView(inputLocation);
+        // The JDK is needed so that the view's TypeHierarchy can resolve java.lang.* types.
+        // Without it, anything that looks up an exception type (e.g. StmtExceptionAnalyzer)
+        // fails with "The given exceptionType ... is not in type hierarchy!".
+        AnalysisInputLocation jdkInputLocation = new JrtFileSystemAnalysisInputLocation(SourceType.Library,
+                List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */);
+
+        JavaView view = new JavaView(List.of(inputLocation, jdkInputLocation));
         logger.info("SootUp view created successfully");
 
         // Step 2: Get all classes in the analysis scope
@@ -193,6 +200,12 @@ public class Main {
             for (JavaSootClass sootClass : view.getClasses().toList()) {
                 // Skip the entry class (already processed)
                 if (sootClass.equals(entryClass)) {
+                    continue;
+                }
+
+                // The view also contains the JDK (needed for type hierarchy resolution only),
+                // so restrict extraction to classes from the analysed input path.
+                if (!sootClass.isApplicationClass()) {
                     continue;
                 }
 
