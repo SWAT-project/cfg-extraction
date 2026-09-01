@@ -4,12 +4,11 @@ public class TryCatch {
     }
 
     public static void test(int a) {
+        int[] arr = new int[4];
         try {
-            if (a < 0) {
-                throw new Exception();
-            } else {
-                System.out.println(4);
-            }
+            arr[a] = 0;
+
+            System.out.println(4);
         } catch (Exception e) {
             assert false;
         }

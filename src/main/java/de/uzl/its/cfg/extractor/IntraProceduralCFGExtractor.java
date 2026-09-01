@@ -6,15 +6,14 @@ import de.uzl.its.cfg.model.ControlFlowGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.jimple.common.expr.JNewExpr;
-import sootup.core.jimple.common.stmt.BranchingStmt;
 import sootup.core.jimple.common.stmt.JAssignStmt;
 import sootup.core.jimple.common.stmt.JIfStmt;
 import sootup.core.jimple.common.stmt.JThrowStmt;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
+import sootup.core.typehierarchy.TypeHierarchy;
 import sootup.core.types.ClassType;
-import sootup.java.core.exceptions.StmtExceptionAnalyzer;
 import sootup.java.core.views.JavaView;
 
 import java.util.*;
@@ -65,38 +64,45 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Set entry node (first statement)
         cfg.setEntryNode(stmtToId.get(stmtGraph.getStartingStmt()));
 
-        StmtExceptionAnalyzer exceptionAnalyzer = new StmtExceptionAnalyzer(view.getTypeHierarchy());
+        TypeHierarchy hierarchy = view.getTypeHierarchy();
+        SafeStmtExceptionAnalyzer exceptionAnalyzer = new SafeStmtExceptionAnalyzer(hierarchy);
 
         // Create edges based on control flow
         for (Stmt stmt : stmts) {
             String sourceId = stmtToId.get(stmt);
             List<Stmt> successors = stmtGraph.successors(stmt);
-            Set<ClassType> possibleExceptions = new HashSet<>(
-                    exceptionAnalyzer.mightThrow(stmt, stmtGraph).getExceptions());
-            // TODO: SootUp is bugged and mightThrow() can fail with a NPE. Figure out what to do in this case.
-            // also, how does SWAT even find ArrayIndex bugs right now, if they dont have an explicit check & throw in the bytecode??
-            Map<ClassType, Stmt> exceptionHandlers = stmtGraph.exceptionalSuccessors(stmt);
+            Set<ClassType> possibleExceptions = exceptionAnalyzer.mightThrow(stmt, stmtGraph);
 
-            possibleExceptions.retainAll(exceptionHandlers.keySet());
-            if (!possibleExceptions.isEmpty()) {
-                // Exception flow
-                for (ClassType exception : possibleExceptions) {
-                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(exceptionHandlers.get(exception)),
-                            CFGEdge.EdgeType.EXCEPTION));
+            // Exceptional flow: one edge per handler that might catch something this statement
+            // can throw. Several caught types can share a handler statement, so the targets are
+            // deduplicated rather than emitting one edge per matching caught type.
+            Set<Stmt> reachableHandlers = new LinkedHashSet<>();
+            for (Map.Entry<ClassType, Stmt> handler : stmtGraph.exceptionalSuccessors(stmt).entrySet()) {
+                if (mightReachHandler(handler.getKey(), possibleExceptions, hierarchy)) {
+                    reachableHandlers.add(handler.getValue());
                 }
-            } else if (successors.isEmpty()) {
-                // This is an exit node (return, throw, etc.)
-                cfg.addExitNode(sourceId);
+            }
+            for (Stmt handler : reachableHandlers) {
+                cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(handler), CFGEdge.EdgeType.EXCEPTION));
+            }
+
+            // Normal flow, independent of the exceptional flow above: stmtGraph.successors() is
+            // unexceptional-only, and a statement inside a try block both falls through to its
+            // successor and can branch to its handler.
+            if (successors.isEmpty()) {
+                // An exit node (return, or a throw that no handler in this method catches). A
+                // throw that *is* caught locally keeps flowing inside the method, so it is not
+                // an exit -- treating it as one would give it a bogus inter-procedural RETURN
+                // edge back into the caller.
+                if (reachableHandlers.isEmpty()) {
+                    cfg.addExitNode(sourceId);
+                }
             } else if (stmt instanceof JIfStmt) {
                 // Conditional branch - distinguish true/false branches
                 handleConditionalBranch((JIfStmt) stmt, successors, sourceId, stmtToId, cfg);
-            } else if (stmt instanceof BranchingStmt) {
-                // Other branching statements (goto, switch, etc.)
-                for (Stmt successor : successors) {
-                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.NORMAL));
-                }
             } else {
-                // Normal flow
+                // Normal flow, including branching statements (goto, switch) whose successors
+                // need no further labelling
                 for (Stmt successor : successors) {
                     cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.NORMAL));
                 }
@@ -152,6 +158,35 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
 
         return new CFGNode(nodeId, stmtString, stmtType, lineNumber);
+    }
+
+    /**
+     * Whether a handler catching {@code caughtType} might be reached from a statement that can
+     * throw {@code thrownTypes}.
+     *
+     * <p>Handler types must be matched against thrown types through the type hierarchy rather
+     * than by identity: SootUp reports the precise implicit exceptions of a statement (e.g.
+     * {@code IndexOutOfBoundsException} for an array store), which almost never equal the type
+     * a handler declares (e.g. {@code catch (Exception e)}), so an identity comparison finds no
+     * match and the CFG ends up with no exceptional edges at all.
+     *
+     * <p>Both directions of the subtype relation count. A thrown type below the caught type is
+     * definitely caught. A thrown type <em>above</em> the caught type may also be caught,
+     * because the thrown set is an over-approximation: where SootUp cannot pin down the runtime
+     * type it reports a supertype such as {@code java.lang.Throwable}, and the actual instance
+     * may well be the caught type.
+     *
+     * <p>The equality case has to be tested separately, because {@link TypeHierarchy#isSubtype}
+     * is a <em>strict</em> subtype relation: it has no reflexive case, so
+     * {@code isSubtype(X, X)} is false and an exactly matching handler (a
+     * {@code catch (IndexOutOfBoundsException e)} around an array access) would be missed.
+     */
+    private boolean mightReachHandler(ClassType caughtType, Set<ClassType> thrownTypes,
+            TypeHierarchy hierarchy) {
+        return thrownTypes.stream().anyMatch(thrownType ->
+                caughtType.equals(thrownType)
+                        || hierarchy.isSubtype(caughtType, thrownType)
+                        || hierarchy.isSubtype(thrownType, caughtType));
     }
 
     private void handleConditionalBranch(JIfStmt ifStmt, List<Stmt> successors,
