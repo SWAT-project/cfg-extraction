@@ -18,6 +18,7 @@ import sys
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any
+import textwrap
 
 try:
     import networkx as nx
@@ -480,11 +481,12 @@ class CFGVisualizer:
                                      font_size=8,
                                      ax=ax)
 
-        # Draw node labels (node ID + statement type)
+        # Draw node labels (node ID + statement type + statement)
         labels = {}
         for node, data in self.graph.nodes(data=True):
             stmt_type = data.get('stmt_type', 'Unknown')
-            labels[node] = f"{node}\n{stmt_type}"
+            statement = data.get('statement', 'Unknown')
+            labels[node] = f"{node}\n{stmt_type}\n{textwrap.fill(statement, 15)}"
 
         nx.draw_networkx_labels(self.graph, pos,
                                labels=labels,
