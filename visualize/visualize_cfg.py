@@ -39,6 +39,11 @@ class CFGVisualizer:
         'TRUE_BRANCH': 'green',
         'FALSE_BRANCH': 'red',
         'EXCEPTION': 'orange',
+        # Phantom guards mirror SWAT's explicit branches around implicit exceptions. They keep
+        # the colours of the real branches they stand in for -- safe/true green, exception/false
+        # red -- and are set apart by being dashed rather than solid.
+        'PHANTOM_TRUE_BRANCH': 'green',
+        'PHANTOM_FALSE_BRANCH': 'red',
         'CALL': 'blue',
         'RETURN': 'purple',
         'CALLBACK': 'cyan'
@@ -50,6 +55,8 @@ class CFGVisualizer:
         'TRUE_BRANCH': 'solid',
         'FALSE_BRANCH': 'solid',
         'EXCEPTION': 'dashed',
+        'PHANTOM_TRUE_BRANCH': 'dashed',
+        'PHANTOM_FALSE_BRANCH': 'dashed',
         'CALL': 'dotted',
         'RETURN': 'dotted',
         'CALLBACK': 'dashdot'
@@ -510,6 +517,19 @@ class CFGVisualizer:
             plt.Line2D([0], [0], color='orange', linewidth=2,
                       linestyle='dashed', label='Exception'),
         ]
+
+        # Add phantom guard types if present
+        has_phantom_guards = any(
+            edge[2].get('edge_type', '').startswith('PHANTOM')
+            for edge in self.graph.edges(data=True)
+        )
+        if has_phantom_guards:
+            legend_elements.extend([
+                plt.Line2D([0], [0], color='green', linewidth=2,
+                          linestyle='dashed', label='Phantom Guard (safe)'),
+                plt.Line2D([0], [0], color='red', linewidth=2,
+                          linestyle='dashed', label='Phantom Guard (exception)'),
+            ])
 
         # Add inter-procedural edge types if present
         if is_inter_procedural:

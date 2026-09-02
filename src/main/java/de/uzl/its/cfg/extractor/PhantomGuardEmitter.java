@@ -104,8 +104,10 @@ public final class PhantomGuardEmitter {
             ClassType exceptionType = guard.getValue();
             Stmt handler = findHandler(exceptionType, guardedStmts.get(guardId));
             String target = handler != null ? entryIds.get(handler) : uncaughtNode();
+            // Kept short to stay readable when drawn along the edge; the guard node's statement
+            // already names the exception type.
             cfg.addEdge(new CFGEdge(guardId, target,
-                    CFGEdge.EdgeType.PHANTOM_FALSE_BRANCH, exceptionType.getClassName()));
+                    CFGEdge.EdgeType.PHANTOM_FALSE_BRANCH, "exception"));
         }
 
         return entryIds;
