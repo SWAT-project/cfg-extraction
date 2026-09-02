@@ -346,9 +346,13 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         }
 
         if (oldCallSiteId != null) {
-            // Find the successor in the intra-procedural CFG (with OLD IDs)
+            // Find the successor in the intra-procedural CFG (with OLD IDs). Only the
+            // unexceptional successor is a return site: a call site inside a try block also has
+            // EXCEPTION edges to its handlers, and those are where control goes when the callee
+            // throws, not where it resumes.
             for (CFGEdge edge : cfg.getEdges()) {
-                if (edge.getSource().equals(oldCallSiteId)) {
+                if (edge.getSource().equals(oldCallSiteId)
+                        && edge.getType() == CFGEdge.EdgeType.NORMAL) {
                     // Map the target to NEW ID
                     String oldTargetId = edge.getTarget();
                     String newTargetId = idMapping.get(oldTargetId);

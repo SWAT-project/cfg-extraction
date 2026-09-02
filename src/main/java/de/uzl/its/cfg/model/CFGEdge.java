@@ -17,6 +17,14 @@ public class CFGEdge {
         TRUE_BRANCH,      // True branch of conditional
         FALSE_BRANCH,     // False branch of conditional
         EXCEPTION,        // Exception handling flow
+
+        // Phantom branches: SWAT turns some implicit exceptions into explicit branches before
+        // the risky instruction (see SwatGuardClassifier). These mirror them, and are kept
+        // distinct from TRUE_BRANCH/FALSE_BRANCH so that a synthesized guard stays
+        // distinguishable from a conditional that exists in the source.
+        PHANTOM_TRUE_BRANCH,  // Guard held: the risky instruction executes
+        PHANTOM_FALSE_BRANCH, // Guard failed: the implicit exception is raised
+
         // Extension points for inter-procedural analysis:
         CALL,            // Method call edge
         RETURN,          // Method return edge

@@ -61,17 +61,24 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             logger.debug("Created node: {} for stmt: {}", nodeId, stmt);
         }
 
-        // Set entry node (first statement)
-        cfg.setEntryNode(stmtToId.get(stmtGraph.getStartingStmt()));
-
         TypeHierarchy hierarchy = view.getTypeHierarchy();
         SafeStmtExceptionAnalyzer exceptionAnalyzer = new SafeStmtExceptionAnalyzer(hierarchy);
+
+        // Insert SWAT's phantom branches ahead of the risky statements. Every edge that targets a
+        // statement from here on has to go through entryIds so that it lands on the head of that
+        // statement's guard chain instead of bypassing it.
+        Map<Stmt, String> entryIds =
+                new PhantomGuardEmitter(cfg, stmtGraph, hierarchy).emit(stmts, stmtToId);
+
+        // Set entry node (the first statement, or the first guard protecting it)
+        cfg.setEntryNode(entryIds.get(stmtGraph.getStartingStmt()));
 
         // Create edges based on control flow
         for (Stmt stmt : stmts) {
             String sourceId = stmtToId.get(stmt);
             List<Stmt> successors = stmtGraph.successors(stmt);
-            Set<ClassType> possibleExceptions = exceptionAnalyzer.mightThrow(stmt, stmtGraph);
+            Set<ClassType> possibleExceptions = unguardedExceptions(
+                    exceptionAnalyzer.mightThrow(stmt, stmtGraph), stmt, hierarchy);
 
             // Exceptional flow: one edge per handler that might catch something this statement
             // can throw. Several caught types can share a handler statement, so the targets are
@@ -83,7 +90,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 }
             }
             for (Stmt handler : reachableHandlers) {
-                cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(handler), CFGEdge.EdgeType.EXCEPTION));
+                cfg.addEdge(new CFGEdge(sourceId, entryIds.get(handler), CFGEdge.EdgeType.EXCEPTION));
             }
 
             // Normal flow, independent of the exceptional flow above: stmtGraph.successors() is
@@ -99,12 +106,12 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 }
             } else if (stmt instanceof JIfStmt) {
                 // Conditional branch - distinguish true/false branches
-                handleConditionalBranch((JIfStmt) stmt, successors, sourceId, stmtToId, cfg);
+                handleConditionalBranch((JIfStmt) stmt, successors, sourceId, entryIds, cfg);
             } else {
                 // Normal flow, including branching statements (goto, switch) whose successors
                 // need no further labelling
                 for (Stmt successor : successors) {
-                    cfg.addEdge(new CFGEdge(sourceId, stmtToId.get(successor), CFGEdge.EdgeType.NORMAL));
+                    cfg.addEdge(new CFGEdge(sourceId, entryIds.get(successor), CFGEdge.EdgeType.NORMAL));
                 }
             }
         }
@@ -147,17 +154,40 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         String stmtString = stmt.toString();
         String stmtType = stmt.getClass().getSimpleName();
 
-        // Try to get line number if available
-        int lineNumber = -1;
-        try {
-            if (stmt.getPositionInfo() != null && stmt.getPositionInfo().getStmtPosition() != null) {
-                lineNumber = stmt.getPositionInfo().getStmtPosition().getFirstLine();
-            }
-        } catch (Exception e) {
-            // Position info not available
-        }
+        return new CFGNode(nodeId, stmtString, stmtType, PhantomGuardEmitter.lineNumberOf(stmt));
+    }
 
-        return new CFGNode(nodeId, stmtString, stmtType, lineNumber);
+    /**
+     * The exceptions of {@code stmt} that SWAT does <em>not</em> turn into a phantom branch.
+     *
+     * <p>An exception already represented by a guard is dropped so that the two edge families stay
+     * disjoint: a guarded array store must not reach its handler through both a
+     * {@link CFGEdge.EdgeType#PHANTOM_FALSE_BRANCH} and an {@link CFGEdge.EdgeType#EXCEPTION}
+     * edge. Matching is by subtype because the two sides name the exception differently -- a guard
+     * knows the precise {@code ArrayIndexOutOfBoundsException} while SootUp only infers
+     * {@code IndexOutOfBoundsException} -- so an inferred type is dropped when the guard's
+     * exception is that type or a subtype of it.
+     *
+     * <p>What survives is what SWAT ignores, most notably the {@code NullPointerException} that
+     * accompanies every array access, since {@code checkArrayBounds} never null-checks.
+     */
+    private Set<ClassType> unguardedExceptions(Set<ClassType> inferredExceptions, Stmt stmt,
+            TypeHierarchy hierarchy) {
+        List<SwatGuardClassifier.Guard> guards = SwatGuardClassifier.guardsOf(stmt);
+        if (guards.isEmpty()) {
+            return inferredExceptions;
+        }
+        Set<ClassType> unguarded = new LinkedHashSet<>();
+        for (ClassType inferred : inferredExceptions) {
+            boolean covered = guards.stream().anyMatch(guard -> {
+                ClassType guarded = guard.kind().getExceptionType();
+                return guarded.equals(inferred) || hierarchy.isSubtype(inferred, guarded);
+            });
+            if (!covered) {
+                unguarded.add(inferred);
+            }
+        }
+        return unguarded;
     }
 
     /**
@@ -190,7 +220,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
     }
 
     private void handleConditionalBranch(JIfStmt ifStmt, List<Stmt> successors,
-            String sourceId, Map<Stmt, String> stmtToId,
+            String sourceId, Map<Stmt, String> entryIds,
             ControlFlowGraph cfg) {
         // For if statements, we have two successors:
         // - The target of the if (true branch)
@@ -200,8 +230,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // (false branch) comes first, the branch target (true branch) second.
         for (int i = 0; i < successors.size(); i++) {
             Stmt successor = successors.get(i);
-            String targetId = stmtToId.get(successor);
-            assert targetId != null : "Successor statement not found in stmtToId map for conditional branch: "
+            String targetId = entryIds.get(successor);
+            assert targetId != null : "Successor statement not found in entryIds map for conditional branch: "
                     + successor + " (source: " + ifStmt + ")";
 
             CFGEdge.EdgeType edgeType;
