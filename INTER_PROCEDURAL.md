@@ -132,19 +132,31 @@ src/main/java/com/cfgextractor/extractor/InterProceduralCFGExtractor.java:70
 
 ## Visualization
 
-The Python visualization script already supports CALL and RETURN edges:
-
 ```bash
-source venv/bin/activate
+source visualize/.venv/bin/activate
 python visualize/visualize_cfg.py output/Main_main_interprocedural.json
 ```
+
+This writes `Main_main_interprocedural.png` plus a `.svg` (preferred for large
+graphs) and a `Main_main_interprocedural_callgraph.png/.svg` overview with one
+node per method.
+
+Each method is drawn as its own labelled frame, read top to bottom, with the
+frames placed side by side (`--layout call-tree` cascades callees below their
+call site instead). Straight-line statements are merged into basic blocks that
+still list every statement, and call/return edges are additionally spelled out
+in text inside the blocks (`→ calls Arrays1.doGet · m8_node_0`) so they can be
+followed while zoomed in. `--focus <method>` restricts the drawing to one
+method. See the visualization section of README.md for all options.
 
 **Edge colors**:
 - Blue dotted: CALL edges
 - Purple dotted: RETURN edges
 - Green solid: TRUE branch
 - Red solid: FALSE branch
-- Black solid: Normal flow
+- Green/red dashed: phantom guard branches (safe / exception)
+- Orange dashed: EXCEPTION edges
+- Dark grey solid: Normal flow
 
 ## Limitations & Future Work
 

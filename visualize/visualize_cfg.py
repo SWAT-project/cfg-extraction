@@ -2,15 +2,25 @@
 """
 CFG Visualization Tool
 
-This script reads CFG JSON files produced by the Java CFG extractor
-and visualizes them using networkx and matplotlib.
+This script reads CFG JSON files produced by the Java CFG extractor and renders
+them as pictures.
+
+Two backends are available:
+
+  graphviz (default)  Lays the CFG out with Graphviz `dot`: one frame per method,
+                      statement text in boxes sized to fit, straight-line
+                      statements merged into basic blocks, and an SVG next to the
+                      PNG so large interprocedural graphs stay readable when
+                      zoomed. Needs the `dot` binary (package `graphviz`).
+  matplotlib          The original networkx/matplotlib renderer, kept as a
+                      fallback for when Graphviz is unavailable.
 
 Usage:
     python visualize_cfg.py <cfg.json> [output.png]
     python visualize_cfg.py output/  # Visualize all CFGs in directory
 
 Requirements:
-    pip install networkx matplotlib
+    graphviz (the `dot` binary); networkx + matplotlib for the fallback backend
 """
 
 import json
@@ -20,14 +30,19 @@ from pathlib import Path
 from typing import Dict, List, Any
 import textwrap
 
+# Allow running the script from anywhere (`python /path/to/visualize_cfg.py`).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import graphviz_render as gv
+
 try:
     import networkx as nx
     import matplotlib.pyplot as plt
     from matplotlib.patches import FancyBboxPatch
-except ImportError:
-    print("Error: Required packages not installed.")
-    print("Please run: pip install networkx matplotlib")
-    sys.exit(1)
+    _MPL_AVAILABLE = True
+except ImportError:  # only the matplotlib backend needs these
+    nx = None
+    plt = None
+    _MPL_AVAILABLE = False
 
 
 class CFGVisualizer:
@@ -577,30 +592,86 @@ class CFGVisualizer:
         nx.drawing.nx_pydot.write_dot(self.graph, output_path)
         print(f"Saved DOT file to: {output_path}")
 
+def _render_with_graphviz(cfg_data, json_path: Path, output_path: Path,
+                          args) -> bool:
+    """Render one CFG with Graphviz. Returns False if `dot` is unavailable."""
+    if not gv.dot_available():
+        return False
+
+    opts = gv.RenderOptions(
+        collapse=not args.no_collapse,
+        shorten=not args.full_names,
+        rankdir=args.rankdir,
+        wrap=args.wrap,
+        max_stmts_per_block=args.max_block_stmts,
+        focus=args.focus,
+        layout=args.layout,
+        annotate_calls=not args.no_call_refs,
+        clone_threshold=args.clone_threshold,
+    )
+
+    formats = [f.strip() for f in args.formats.split(',') if f.strip()]
+    dot_source = gv.build_dot(cfg_data, opts)
+
+    if args.dot:
+        dot_path = output_path.with_suffix('.dot')
+        dot_path.write_text(dot_source)
+        print(f"  wrote {dot_path}")
+
+    for written in gv.render(dot_source, output_path, formats=formats, dpi=args.dpi):
+        print(f"  wrote {written}")
+
+    if args.callgraph:
+        cg_source = gv.build_callgraph_dot(cfg_data, shorten=not args.full_names)
+        if cg_source:
+            cg_base = output_path.with_name(output_path.stem + '_callgraph')
+            for written in gv.render(cg_source, cg_base, formats=formats, dpi=args.dpi):
+                print(f"  wrote {written}")
+
+    return True
+
 
 def visualize_cfg_file(json_path: Path, output_path: Path = None,
-                       show: bool = True, dot: bool = False):
+                       show: bool = True, dot: bool = False, args=None):
     """Visualize a single CFG JSON file."""
     print(f"Loading CFG from: {json_path}")
 
-    visualizer = CFGVisualizer()
-    visualizer.load_cfg(json_path)
-    visualizer.build_graph()
+    if args is None:
+        args = _default_args(show=show, dot=dot)
 
-    method_name = json_path.stem
     if output_path is None:
-        output_path = json_path.parent / f"{method_name}.png"
+        output_path = json_path.parent / f"{json_path.stem}.png"
 
-    visualizer.visualize(output_path, show=show)
+    with open(json_path) as handle:
+        cfg_data = json.load(handle)
 
-    if dot:
-        dot_path = json_path.parent / f"{method_name}.dot"
-        visualizer.generate_dot(dot_path)
+    if args.engine in ('graphviz', 'auto') and not args.show:
+        if _render_with_graphviz(cfg_data, json_path, output_path, args):
+            return
+        if args.engine == 'graphviz':
+            print("Error: Graphviz `dot` not found on PATH "
+                  "(install the `graphviz` package), or use --engine matplotlib")
+            sys.exit(1)
+        print("Note: Graphviz `dot` not found, falling back to matplotlib")
+
+    if not _MPL_AVAILABLE:
+        print("Error: the matplotlib backend needs networkx and matplotlib.")
+        print("Please run: pip install networkx matplotlib")
+        sys.exit(1)
+
+    visualizer = CFGVisualizer()
+    visualizer.cfg_data = cfg_data
+    visualizer.build_graph()
+    visualizer.visualize(output_path, show=args.show)
+
+    if args.dot:
+        visualizer.generate_dot(output_path.with_suffix('.dot'))
 
 
-def visualize_directory(directory: Path, show: bool = False):
+def visualize_directory(directory: Path, show: bool = False, args=None):
     """Visualize all CFG JSON files in a directory."""
-    json_files = list(directory.glob("*.json"))
+    json_files = sorted(p for p in directory.glob("*.json")
+                        if not p.name.endswith("_metadata.json"))
 
     if not json_files:
         print(f"No JSON files found in: {directory}")
@@ -608,23 +679,26 @@ def visualize_directory(directory: Path, show: bool = False):
 
     print(f"Found {len(json_files)} CFG files")
 
+    failures = 0
     for json_file in json_files:
         try:
-            output_png = json_file.with_suffix('.png')
-            visualize_cfg_file(json_file, output_png, show=False, dot=False)
+            visualize_cfg_file(json_file, json_file.with_suffix('.png'),
+                               show=False, dot=False, args=args)
         except Exception as e:
+            failures += 1
             print(f"Error visualizing {json_file}: {e}")
 
-    print(f"Generated {len(json_files)} visualizations")
+    print(f"Generated {len(json_files) - failures} visualizations"
+          + (f" ({failures} failed)" if failures else ""))
 
 
-def main():
+def _build_parser():
     parser = argparse.ArgumentParser(
         description='Visualize Control Flow Graphs from JSON files',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Visualize a single CFG
+  # Visualize a single CFG (writes .png and .svg)
   python visualize_cfg.py output/Main_main.json
 
   # Visualize and save to specific file
@@ -633,20 +707,75 @@ Examples:
   # Visualize all CFGs in a directory
   python visualize_cfg.py output/
 
-  # Generate DOT file for Graphviz
+  # Huge interprocedural CFG: only one method, with the rest stubbed out
+  python visualize_cfg.py Main_main_interprocedural.json --focus doGet
+
+  # Keep every statement as its own node, with full type names
+  python visualize_cfg.py Main_main.json --no-collapse --full-names
+
+  # Also write the Graphviz source
   python visualize_cfg.py output/Main_main.json --dot
         """)
 
     parser.add_argument('input', type=Path,
-                       help='JSON file or directory containing JSON files')
+                        help='JSON file or directory containing JSON files')
     parser.add_argument('output', type=Path, nargs='?',
-                       help='Output PNG file (optional)')
+                        help='Output image file (optional)')
     parser.add_argument('--show', action='store_true',
-                       help='Display the plot interactively')
+                        help='Display the plot interactively (matplotlib backend)')
     parser.add_argument('--dot', action='store_true',
-                       help='Also generate DOT file for Graphviz')
+                        help='Also write the Graphviz DOT source')
 
-    args = parser.parse_args()
+    group = parser.add_argument_group('graphviz backend')
+    group.add_argument('--engine', choices=['auto', 'graphviz', 'matplotlib'],
+                       default='auto',
+                       help='Layout backend (default: auto = graphviz if available)')
+    group.add_argument('--formats', default='png,svg',
+                       help='Comma separated output formats (default: png,svg). '
+                            'SVG stays sharp at any zoom level')
+    group.add_argument('--dpi', type=int, default=96,
+                       help='Raster resolution for png/jpg output (default: 96)')
+    group.add_argument('--layout', choices=['lanes', 'call-tree'], default='lanes',
+                       help="'lanes': one column per method, all starting at the "
+                            "top (compact, predictable reading order); "
+                            "'call-tree': callees placed below their call site")
+    group.add_argument('--no-call-refs', action='store_true',
+                       help='Do not annotate call sites/callees with the name and '
+                            'node id of the other end of the call edge')
+    group.add_argument('--rankdir', choices=['TB', 'LR', 'BT', 'RL'], default='TB',
+                       help='Layout direction (default: TB)')
+    group.add_argument('--no-collapse', action='store_true',
+                       help='Do not merge straight-line statements into basic blocks')
+    group.add_argument('--full-names', action='store_true',
+                       help='Keep fully qualified type names instead of simple names')
+    group.add_argument('--wrap', type=int, default=72,
+                       help='Wrap statement text at N characters (default: 72)')
+    group.add_argument('--max-block-stmts', type=int, default=0,
+                       help='Show at most N statements per basic block (0 = all)')
+    group.add_argument('--clone-threshold', type=int, default=6, metavar='N',
+                       help='Blocks that N or more blocks jump into (a shared '
+                            'return, the uncaught exception sink) are drawn as a '
+                            'local stub next to each source instead of one node '
+                            'with N long edges (0 = off, default: 6)')
+    group.add_argument('--focus', metavar='SUBSTRING',
+                       help='Only draw methods whose signature contains SUBSTRING; '
+                            'other methods collapse into stub nodes')
+    group.add_argument('--callgraph', action='store_true', default=True,
+                       help='Also write a method-level call graph overview '
+                            '(interprocedural CFGs, default: on)')
+    group.add_argument('--no-callgraph', dest='callgraph', action='store_false',
+                       help='Skip the call graph overview')
+    return parser
+
+
+def _default_args(show=False, dot=False):
+    """Argument defaults for programmatic use of visualize_cfg_file()."""
+    return _build_parser().parse_args([str(Path('.')), *(['--show'] if show else []),
+                                       *(['--dot'] if dot else [])])
+
+
+def main():
+    args = _build_parser().parse_args()
 
     input_path = args.input
 
@@ -655,9 +784,10 @@ Examples:
         sys.exit(1)
 
     if input_path.is_dir():
-        visualize_directory(input_path, show=args.show)
+        visualize_directory(input_path, show=args.show, args=args)
     elif input_path.is_file():
-        visualize_cfg_file(input_path, args.output, show=args.show, dot=args.dot)
+        visualize_cfg_file(input_path, args.output, show=args.show,
+                           dot=args.dot, args=args)
     else:
         print(f"Error: {input_path} is neither a file nor directory")
         sys.exit(1)
