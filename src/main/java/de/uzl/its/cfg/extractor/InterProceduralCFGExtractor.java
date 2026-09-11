@@ -86,6 +86,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
+        combinedCFG.addMetadata("isIncomplete", false); // potentially overwritten later
 
         logger.info("Inter-procedural CFG extracted: {} nodes, {} edges",
                 combinedCFG.getNodes().size(),
