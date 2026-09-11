@@ -36,10 +36,10 @@ public class CFGMetadataExtractor {
      * Extract comprehensive metadata from a CFG.
      *
      * @param cfg The control flow graph to analyze
-     * @param methodBlacklist Set of patterns to identify out-of-scope methods
+     * @param methodPrefixBlacklist Set of patterns to identify out-of-scope methods
      * @return Map containing all extracted metadata
      */
-    public Map<String, Object> extractMetadata(ControlFlowGraph cfg, Set<String> methodBlacklist) {
+    public Map<String, Object> extractMetadata(ControlFlowGraph cfg, Set<String> methodPrefixBlacklist) {
         Map<String, Object> metadata = new LinkedHashMap<>();
 
         // Basic CFG statistics
@@ -48,7 +48,7 @@ public class CFGMetadataExtractor {
         metadata.put("analysisType", cfg.getAnalysisType().toString());
 
         // Method call analysis
-        Map<String, Object> methodCallInfo = analyzeMethodCalls(cfg, methodBlacklist);
+        Map<String, Object> methodCallInfo = analyzeMethodCalls(cfg, methodPrefixBlacklist);
         metadata.put("methodCalls", methodCallInfo);
 
         // Assert statement analysis
@@ -74,7 +74,7 @@ public class CFGMetadataExtractor {
      * Analyze method calls in the CFG.
      * Extracts all method invocations from statement strings.
      */
-    private Map<String, Object> analyzeMethodCalls(ControlFlowGraph cfg, Set<String> methodBlacklist) {
+    private Map<String, Object> analyzeMethodCalls(ControlFlowGraph cfg, Set<String> methodPrefixBlacklist) {
         Map<String, Object> callInfo = new LinkedHashMap<>();
         Map<String, Integer> callCounts = new HashMap<>();
         Map<String, Integer> blacklistedCalls = new HashMap<>();
@@ -94,8 +94,8 @@ public class CFGMetadataExtractor {
 
                     // Check if blacklisted
                     boolean isBlacklisted = false;
-                    for (String pattern : methodBlacklist) {
-                        if (methodSig.contains(pattern)) {
+                    for (String pattern : methodPrefixBlacklist) {
+                        if (methodSig.startsWith(pattern)) {
                             isBlacklisted = true;
                             blacklistedCalls.put(methodSig, blacklistedCalls.getOrDefault(methodSig, 0) + 1);
                             break;
@@ -135,7 +135,7 @@ public class CFGMetadataExtractor {
             // 1. AssertionError constructor calls (assertions compiled as if-throw)
             // 2. Direct assertion checks
             if (stmt.contains("AssertionError") ||
-                (node.getStmtType().equals("JIfStmt") && isAssertionCheck(stmt))) {
+                    (node.getStmtType().equals("JIfStmt") && isAssertionCheck(stmt))) {
 
                 Map<String, Object> assertDetails = new LinkedHashMap<>();
                 assertDetails.put("nodeId", node.getId());
@@ -182,8 +182,8 @@ public class CFGMetadataExtractor {
                 switchStatements++;
                 // Count switch cases from outgoing edges
                 long caseCount = cfg.getEdges().stream()
-                    .filter(edge -> edge.getSource().equals(node.getId()))
-                    .count();
+                        .filter(edge -> edge.getSource().equals(node.getId()))
+                        .count();
                 totalBranches += caseCount;
             }
         }
@@ -229,8 +229,8 @@ public class CFGMetadataExtractor {
         // Sort by count descending
         Map<String, Integer> sortedTypes = new LinkedHashMap<>();
         typeCounts.entrySet().stream()
-            .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-            .forEachOrdered(e -> sortedTypes.put(e.getKey(), e.getValue()));
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                .forEachOrdered(e -> sortedTypes.put(e.getKey(), e.getValue()));
 
         return sortedTypes;
     }

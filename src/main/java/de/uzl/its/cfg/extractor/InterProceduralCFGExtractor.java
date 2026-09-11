@@ -41,7 +41,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final Map<MethodSignature, String> methodEntryNodes;
     private final Map<MethodSignature, Set<String>> methodExitNodes;
     private final List<String> assertionPointIds;
-    private final Set<String> methodBlacklist;
+    private final Set<String> methodPrefixBlacklist;
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.intraExtractor = new IntraProceduralCFGExtractor();
@@ -50,13 +50,13 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         this.methodEntryNodes = new HashMap<>();
         this.methodExitNodes = new HashMap<>();
         this.assertionPointIds = new ArrayList<>();
-        this.methodBlacklist = new HashSet<>();
+        this.methodPrefixBlacklist = new HashSet<>();
 
         // Configure default blacklist (methods to not expand even if available)
         // These methods will have statement nodes but no CALL/RETURN edges
-        this.methodBlacklist.add("org.sosy_lab.sv_benchmarks.Verifier");
-        this.methodBlacklist.add("java.lang.");
-        this.methodBlacklist.add("java.util.");
+        this.methodPrefixBlacklist.add("<org.sosy_lab.sv_benchmarks.Verifier:");
+        this.methodPrefixBlacklist.add("<java.lang.");
+        this.methodPrefixBlacklist.add("<java.util.");
 
         // Build call graph using Class Hierarchy Analysis
         // logger.info("Building call graph with {} entry points", entryPoints.size());
@@ -369,16 +369,16 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
     private boolean isBlacklisted(MethodSignature methodSig) {
         String sigStr = methodSig.toString();
-        for (String blacklistPattern : methodBlacklist) {
-            if (sigStr.contains(blacklistPattern)) {
+        for (String blacklistPattern : methodPrefixBlacklist) {
+            if (sigStr.startsWith(blacklistPattern)) {
                 return true;
             }
         }
         return false;
     }
 
-    public Set<String> getMethodBlacklist() {
-        return new HashSet<>(methodBlacklist);
+    public Set<String> getMethodPrefixBlacklist() {
+        return new HashSet<>(methodPrefixBlacklist);
     }
 
     @Override

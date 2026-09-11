@@ -149,7 +149,8 @@ public class Main {
 
             // Extract and save metadata from the CFG
             CFGMetadataExtractor metadataExtractor = new CFGMetadataExtractor();
-            Map<String, Object> metadata = metadataExtractor.extractMetadata(cfg, interExtractor.getMethodBlacklist());
+            Map<String, Object> metadata = metadataExtractor.extractMetadata(cfg,
+                    interExtractor.getMethodPrefixBlacklist());
 
             // Log statistics to console
             metadataExtractor.logStatistics(metadata);
