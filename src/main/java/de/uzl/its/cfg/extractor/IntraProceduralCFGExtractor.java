@@ -26,8 +26,25 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
 
     private static final Logger logger = LoggerFactory.getLogger(IntraProceduralCFGExtractor.class);
 
+    /**
+     * An extracted CFG together with the node each statement became.
+     *
+     * <p>Callers that need to get from a {@link Stmt} back to its node cannot search the CFG by
+     * statement text: a method may contain several textually identical statements (two
+     * {@code writer.println(name)} calls in different branches produce the same Jimple), and they
+     * are separate nodes. {@link Stmt} has no structural equality, so this map distinguishes them
+     * by identity the way the extraction itself does.
+     */
+    public record MethodCFG(ControlFlowGraph cfg, Map<Stmt, String> nodeIds) {
+    }
+
     @Override
     public ControlFlowGraph extractCFG(SootMethod method, JavaView view) {
+        return extractMethodCFG(method, view).cfg();
+    }
+
+    /** As {@link #extractCFG}, but also reporting which node each statement became. */
+    public MethodCFG extractMethodCFG(SootMethod method, JavaView view) {
         logger.info("Extracting intra-procedural CFG for method: {}", method.getSignature());
 
         String methodSig = method.getSignature().toString();
@@ -38,7 +55,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Check if method has a body (not abstract/native)
         if (!method.hasBody()) {
             logger.warn("Method {} has no body (abstract or native)", methodSig);
-            return cfg;
+            return new MethodCFG(cfg, Map.of());
         }
 
         Body body = method.getBody();
@@ -147,7 +164,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         logger.info("Extracted CFG with {} nodes and {} edges",
                 cfg.getNodes().size(), cfg.getEdges().size());
 
-        return cfg;
+        return new MethodCFG(cfg, stmtToId);
     }
 
     private CFGNode createNode(String nodeId, Stmt stmt) {

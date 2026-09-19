@@ -35,6 +35,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private static final Logger logger = LoggerFactory.getLogger(InterProceduralCFGExtractor.class);
 
     private final IntraProceduralCFGExtractor intraExtractor;
+    private final ReceiverTypeResolver receiverTypeResolver;
     // private final CallGraph callGraph;
     private final JavaView view;
     private final Set<MethodSignature> processedMethods;
@@ -45,6 +46,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.intraExtractor = new IntraProceduralCFGExtractor();
+        this.receiverTypeResolver = new ReceiverTypeResolver(view);
         this.view = view;
         this.processedMethods = new HashSet<>();
         this.methodEntryNodes = new HashMap<>();
@@ -136,8 +138,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             return;
         }
 
-        // Extract intra-procedural CFG
-        ControlFlowGraph methodCFG = intraExtractor.extractCFG(method, view);
+        // Extract intra-procedural CFG, keeping the node each statement became so that call
+        // sites can be looked up by statement identity below
+        IntraProceduralCFGExtractor.MethodCFG extraction = intraExtractor.extractMethodCFG(method, view);
+        ControlFlowGraph methodCFG = extraction.cfg();
+        Map<Stmt, String> nodeIdsByStmt = extraction.nodeIds();
 
         for (CFGNode node : methodCFG.getNodes()) {
             String newId = methodPrefix + node.getId();
@@ -192,92 +197,125 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         // Find call sites and add inter-procedural edges
         Body body = method.getBody();
-        List<Stmt> stmts = new ArrayList<>(body.getControlFlowGraph().getStmts());
 
-        for (int i = 0; i < stmts.size(); i++) {
-            Stmt stmt = stmts.get(i);
+        for (Stmt stmt : body.getControlFlowGraph().getStmts()) {
+            if (!isCallSite(stmt)) {
+                continue;
+            }
 
-            if (isCallSite(stmt)) {
-                // Get the node ID for this call site
-                String callSiteId = findNodeForStatement(methodCFG, stmt, oldToNewId);
+            // Get the node ID for this call site
+            String callSiteId = oldToNewId.get(nodeIdsByStmt.get(stmt));
 
-                assert callSiteId != null
-                        : "Failed to find CFG node for call site statement: " + stmt + " in method: " + methodSig;
+            assert callSiteId != null
+                    : "Failed to find CFG node for call site statement: " + stmt + " in method: " + methodSig;
 
-                // Find callees using call graph
-                Set<MethodSignature> callees = getCallees(method, stmt);
+            ReceiverTypeResolver.Dispatch dispatch = receiverTypeResolver.resolve(method, stmt);
+            Optional<MethodSignature> calleeSigOpt = dispatch.getInlinableTarget();
 
-                for (MethodSignature calleeSig : callees) {
-                    // Check if method is blacklisted
-                    if (isBlacklisted(calleeSig)) {
-                        logger.debug("Skipping blacklisted method: {}", calleeSig);
-                        continue;
-                    }
-
-                    // The view contains the JDK (needed for type hierarchy resolution only), so
-                    // library methods now resolve. Only expand methods from the analysed input path.
-                    if (!isApplicationMethod(calleeSig)) {
-                        logger.debug("Skipping library method: {}", calleeSig);
-                        continue;
-                    }
-
-                    Optional<? extends SootMethod> calleeOpt = view.getMethod(calleeSig);
-
-                    if (calleeOpt.isPresent()) {
-                        SootMethod callee = calleeOpt.get();
-
-                        // Add CALL edge
-                        String calleeEntry = methodEntryNodes.get(calleeSig);
-
-                        if (calleeEntry == null) {
-                            // Recursively extract callee CFG
-                            extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
-                            calleeEntry = methodEntryNodes.get(calleeSig);
-                        }
-
-                        // If calleeEntry is still null after extraction attempt, the method was either:
-                        // 1. Already processed (in processedMethods)
-                        // 2. Skipped due to depth limit
-                        // 3. Has no body
-                        // In all these cases, we should fail fast to identify the issue
-                        assert calleeEntry != null : "Failed to get entry node for callee: " + calleeSig +
-                                " (depth=" + depth + ", already processed=" + processedMethods.contains(calleeSig) +
-                                ", has body=" + callee.hasBody() + ")";
-
-                        CFGEdge callEdge = new CFGEdge(
-                                callSiteId,
-                                calleeEntry,
-                                CFGEdge.EdgeType.CALL,
-                                callee.getName());
-                        combinedCFG.addEdge(callEdge);
-                        // Remove normal/fallthrough edge
-                        combinedCFG.removeEdges(
-                                combinedCFG.getEdges().stream().filter(
-                                        e -> e.getSource().equals(callSiteId) && e.getType().equals(EdgeType.NORMAL))
-                                        .toList());
-
-                        // Add RETURN edges from callee exits to return site
-                        String returnSiteId = findReturnSite(stmts, i, methodCFG, oldToNewId);
-
-                        assert returnSiteId != null : "Failed to find return site for call at statement: " + stmt +
-                                " in method: " + methodSig + " (call to: " + calleeSig + ")";
-
-                        Set<String> calleeExits = methodExitNodes.get(calleeSig);
-                        assert calleeExits != null : "Failed to get exit nodes for callee: " + calleeSig;
-
-                        for (String exitId : calleeExits) {
-                            CFGEdge returnEdge = new CFGEdge(
-                                    exitId,
-                                    returnSiteId,
-                                    CFGEdge.EdgeType.RETURN);
-                            combinedCFG.addEdge(returnEdge);
-                        }
-                    } else {
-                        logger.debug("Callee not found in view (may be library method): {}", calleeSig);
-                    }
+            if (calleeSigOpt.isEmpty()) {
+                // Dispatch could not be narrowed to a single method, so there is no callee to
+                // inline: the consumers of this graph allow a node only one fall-through
+                // successor, which rules out wiring up all the alternatives instead.
+                //
+                // Whatever is behind such a call site is therefore missing from the CFG, and an
+                // assertion among the possible overrides would make every path leading here look
+                // uninteresting and be pruned. Flag the call site itself so those paths survive.
+                if (mayHideApplicationCode(dispatch)) {
+                    logger.info("Unresolved dispatch at '{}' in {}: {} possible target(s); "
+                            + "marking call site as a possible assertion point",
+                            stmt, methodSig, dispatch.getTargets().size());
+                    this.assertionPointIds.add(callSiteId);
                 }
+                continue;
+            }
+
+            MethodSignature calleeSig = calleeSigOpt.get();
+
+            // Check if method is blacklisted
+            if (isBlacklisted(calleeSig)) {
+                logger.debug("Skipping blacklisted method: {}", calleeSig);
+                continue;
+            }
+
+            // The view contains the JDK (needed for type hierarchy resolution only), so
+            // library methods now resolve. Only expand methods from the analysed input path.
+            if (!isApplicationMethod(calleeSig)) {
+                logger.debug("Skipping library method: {}", calleeSig);
+                continue;
+            }
+
+            Optional<? extends SootMethod> calleeOpt = view.getMethod(calleeSig);
+
+            if (calleeOpt.isEmpty()) {
+                logger.debug("Callee not found in view (may be library method): {}", calleeSig);
+                continue;
+            }
+
+            SootMethod callee = calleeOpt.get();
+
+            // Add CALL edge
+            String calleeEntry = methodEntryNodes.get(calleeSig);
+
+            if (calleeEntry == null) {
+                // Recursively extract callee CFG
+                extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
+                calleeEntry = methodEntryNodes.get(calleeSig);
+            }
+
+            // If calleeEntry is still null after extraction attempt, the method was either:
+            // 1. Already processed (in processedMethods)
+            // 2. Skipped due to depth limit
+            // 3. Has no body
+            // In all these cases, we should fail fast to identify the issue
+            assert calleeEntry != null : "Failed to get entry node for callee: " + calleeSig +
+                    " (depth=" + depth + ", already processed=" + processedMethods.contains(calleeSig) +
+                    ", has body=" + callee.hasBody() + ")";
+
+            CFGEdge callEdge = new CFGEdge(
+                    callSiteId,
+                    calleeEntry,
+                    CFGEdge.EdgeType.CALL,
+                    callee.getName());
+            combinedCFG.addEdge(callEdge);
+            // Remove normal/fallthrough edge
+            combinedCFG.removeEdges(
+                    combinedCFG.getEdges().stream().filter(
+                            e -> e.getSource().equals(callSiteId) && e.getType().equals(EdgeType.NORMAL))
+                            .toList());
+
+            // Add RETURN edges from callee exits to return site
+            String returnSiteId = findReturnSite(stmt, nodeIdsByStmt, methodCFG, oldToNewId);
+
+            assert returnSiteId != null : "Failed to find return site for call at statement: " + stmt +
+                    " in method: " + methodSig + " (call to: " + calleeSig + ")";
+
+            Set<String> calleeExits = methodExitNodes.get(calleeSig);
+            assert calleeExits != null : "Failed to get exit nodes for callee: " + calleeSig;
+
+            for (String exitId : calleeExits) {
+                CFGEdge returnEdge = new CFGEdge(
+                        exitId,
+                        returnSiteId,
+                        CFGEdge.EdgeType.RETURN);
+                combinedCFG.addEdge(returnEdge);
             }
         }
+    }
+
+    /**
+     * Whether a call site left out of the CFG might still run application code.
+     *
+     * <p>Only application methods are ever inlined, so an ambiguity among library methods hides
+     * nothing that would have been in the graph anyway. The same goes for blacklisted methods,
+     * which are left out by choice. What does count is a possible application target that was
+     * identified but not inlined, and a dispatch nothing could be established about at all.
+     */
+    private boolean mayHideApplicationCode(ReceiverTypeResolver.Dispatch dispatch) {
+        if (dispatch.mayRunUnlistedApplicationCode()) {
+            return true;
+        }
+        return dispatch.getTargets().stream()
+                .anyMatch(target -> !isBlacklisted(target) && isApplicationMethod(target));
     }
 
     private boolean isApplicationMethod(MethodSignature methodSig) {
@@ -299,68 +337,27 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         return stmt.asInvokableStmt().getInvokeExpr();
     }
 
-    private Set<MethodSignature> getCallees(SootMethod caller, Stmt callSite) {
-        Set<MethodSignature> callees = new HashSet<>();
-
-        // Extract the invoke expression from the call site
-        Optional<AbstractInvokeExpr> invokeExpr = getInvokeExpr(callSite);
-
-        // If isCallSite() returned true, invokeExpr should be present
-        assert invokeExpr.isPresent() : "Failed to extract invoke expression from call site: " + callSite
-                + " in method: " + caller.getSignature();
-
-        // Get the specific method being invoked at this call site
-        MethodSignature targetMethod = invokeExpr.get().getMethodSignature();
-        callees.add(targetMethod);
-
-        return callees;
-    }
-
-    private String findNodeForStatement(ControlFlowGraph cfg, Stmt stmt, Map<String, String> idMapping) {
-        String stmtStr = stmt.toString();
-
-        for (CFGNode node : cfg.getNodes()) {
-            if (node.getStatement().equals(stmtStr)) {
-                String newNodeId = idMapping.get(node.getId());
-                assert newNodeId != null : "Failed to map node ID: " + node.getId() + " for statement: " + stmt;
-                return newNodeId;
-            }
-        }
-
-        return null;
-    }
-
-    private String findReturnSite(List<Stmt> stmts, int callSiteIndex,
+    /**
+     * Where control resumes in the caller once {@code callSite} returns.
+     *
+     * <p>This is the call site's successor in the CFG rather than the next statement in the
+     * listing, and only the unexceptional one: a call inside a try block also has EXCEPTION edges
+     * to its handlers, and those are where control goes when the callee throws, not where it
+     * resumes.
+     */
+    private String findReturnSite(Stmt callSite, Map<Stmt, String> nodeIdsByStmt,
             ControlFlowGraph cfg, Map<String, String> idMapping) {
-        // Return site should be the CFG successor of the call site, not just the next statement
-        // Find the call site statement
-        Stmt callSite = stmts.get(callSiteIndex);
-        String callSiteStmt = callSite.toString();
-
-        // Find the call site node in the intra-procedural CFG (with OLD ID)
-        String oldCallSiteId = null;
-        for (CFGNode node : cfg.getNodes()) {
-            if (node.getStatement().equals(callSiteStmt)) {
-                oldCallSiteId = node.getId();
-                break;
-            }
+        String oldCallSiteId = nodeIdsByStmt.get(callSite);
+        if (oldCallSiteId == null) {
+            return null;
         }
 
-        if (oldCallSiteId != null) {
-            // Find the successor in the intra-procedural CFG (with OLD IDs). Only the
-            // unexceptional successor is a return site: a call site inside a try block also has
-            // EXCEPTION edges to its handlers, and those are where control goes when the callee
-            // throws, not where it resumes.
-            for (CFGEdge edge : cfg.getEdges()) {
-                if (edge.getSource().equals(oldCallSiteId)
-                        && edge.getType() == CFGEdge.EdgeType.NORMAL) {
-                    // Map the target to NEW ID
-                    String oldTargetId = edge.getTarget();
-                    String newTargetId = idMapping.get(oldTargetId);
-                    assert newTargetId != null
-                            : "Failed to map return site node ID: " + oldTargetId + " (call site: " + callSite + ")";
-                    return newTargetId;
-                }
+        for (CFGEdge edge : cfg.getEdges()) {
+            if (edge.getSource().equals(oldCallSiteId) && edge.getType() == CFGEdge.EdgeType.NORMAL) {
+                String newTargetId = idMapping.get(edge.getTarget());
+                assert newTargetId != null
+                        : "Failed to map return site node ID: " + edge.getTarget() + " (call site: " + callSite + ")";
+                return newTargetId;
             }
         }
 
