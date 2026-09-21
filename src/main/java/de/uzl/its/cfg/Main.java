@@ -12,17 +12,21 @@ import org.slf4j.LoggerFactory;
 import sootup.core.inputlocation.AnalysisInputLocation;
 import sootup.core.model.SootMethod;
 import sootup.core.model.SourceType;
-import sootup.java.bytecode.frontend.inputlocation.JavaClassPathAnalysisInputLocation;
+import sootup.core.util.PathUtils;
+import sootup.java.bytecode.frontend.inputlocation.PathBasedAnalysisInputLocation;
 import sootup.java.bytecode.frontend.inputlocation.JrtFileSystemAnalysisInputLocation;
 import sootup.java.core.JavaIdentifierFactory;
 import sootup.java.core.JavaSootClass;
 import sootup.java.core.types.JavaClassType;
 import sootup.java.core.views.JavaView;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -78,14 +82,58 @@ public class Main {
         }
     }
 
+    /**
+     * Returns the paths to exclude when scanning {@code entryPath} for classes.
+     *
+     * <p>The output directory is only excluded when it is strictly nested inside the classpath
+     * entry, which is the case that causes trouble. If the two are equal, or the entry sits inside
+     * the output directory, excluding it would discard the very classes we were asked to analyse,
+     * so nothing is ignored and the caller is warned instead.
+     */
+    private static Collection<Path> ignoredPathsFor(Path entryPath, Path outputDir) {
+        Path ignore = outputDir.toAbsolutePath().normalize();
+        if (ignore.startsWith(entryPath) && !ignore.equals(entryPath)) {
+            return List.of(ignore);
+        }
+        if (entryPath.startsWith(ignore)) {
+            logger.warn("Classpath entry {} lies inside the output directory {}; "
+                    + "analysing it as-is, output artifacts may be picked up as classes",
+                    entryPath, ignore);
+        }
+        return List.of();
+    }
+
     private static void extractCFGs(String inputPath, Path outputDir,
             String entryClassName, String entryMethodName,
             String analysisType) throws IOException {
 
         // Step 1: Create SootUp View for bytecode analysis
         logger.info("Creating SootUp view for bytecode analysis...");
-        AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(inputPath, SourceType.Application,
-                List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */);
+        // Built per classpath entry rather than via JavaClassPathAnalysisInputLocation, which
+        // hardcodes an empty ignoredPaths and so would also scan the output directory. That
+        // matters when the output directory is nested inside a classpath entry, as it is when a
+        // target keeps logs/ next to its classes: the executor dumps instrumented copies to
+        // <outputDir>/instrumented, and SootUp then opens each one only to reject it, since the
+        // name declared in the bytecode cannot match the one implied by its path ("Class names do
+        // not match"). Excluding the output directory skips the pointless parse and the
+        // accompanying warnings, and keeps build artifacts out of the analysis scope generally.
+        List<AnalysisInputLocation> inputLocations = new ArrayList<>();
+        for (String entry : inputPath.split(File.pathSeparator)) {
+            if (entry.isEmpty()) {
+                continue;
+            }
+            Path entryPath = Paths.get(entry).toAbsolutePath().normalize();
+            if (!Files.exists(entryPath) || !(Files.isDirectory(entryPath) || PathUtils.isArchive(entryPath))) {
+                logger.warn("Skipping classpath entry (not a directory or archive): {}", entryPath);
+                continue;
+            }
+            inputLocations.add(PathBasedAnalysisInputLocation.create(entryPath, SourceType.Application,
+                    List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */,
+                    ignoredPathsFor(entryPath, outputDir)));
+        }
+        if (inputLocations.isEmpty()) {
+            throw new IllegalArgumentException("No usable classpath entries in: " + inputPath);
+        }
 
         // The JDK is needed so that the view's TypeHierarchy can resolve java.lang.* types.
         // Without it, anything that looks up an exception type (e.g. StmtExceptionAnalyzer)
@@ -93,7 +141,8 @@ public class Main {
         AnalysisInputLocation jdkInputLocation = new JrtFileSystemAnalysisInputLocation(SourceType.Library,
                 List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */);
 
-        JavaView view = new JavaView(List.of(inputLocation, jdkInputLocation));
+        inputLocations.add(jdkInputLocation);
+        JavaView view = new JavaView(inputLocations);
         logger.info("SootUp view created successfully");
 
         // Step 2: Get all classes in the analysis scope
