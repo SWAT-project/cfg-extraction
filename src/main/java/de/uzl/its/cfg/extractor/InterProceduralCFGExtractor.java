@@ -255,23 +255,23 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
             SootMethod callee = calleeOpt.get();
 
-            // Add CALL edge
-            String calleeEntry = methodEntryNodes.get(calleeSig);
-
-            if (calleeEntry == null) {
-                // Recursively extract callee CFG
-                extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
-                calleeEntry = methodEntryNodes.get(calleeSig);
+            if (!ownsExpansionOf(calleeSig)) {
+                logger.info("Call to already expanded method {} at '{}' in {}: "
+                        + "marking call site as incomplete",
+                        calleeSig, stmt, methodSig);
+                markIncomplete(combinedCFG, callSiteId);
+                continue;
             }
 
-            // If calleeEntry is still null after extraction attempt, the method was either:
-            // 1. Already processed (in processedMethods)
-            // 2. Skipped due to depth limit
-            // 3. Has no body
-            // In all these cases, we should fail fast to identify the issue
+            // Recursively extract callee CFG
+            extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
+            String calleeEntry = methodEntryNodes.get(calleeSig);
+
+            // The expansion above was this call site's to make, so it should have produced an
+            // entry node. What is left is a method with no body at all -- abstract or native,
+            // which concrete dispatch resolution should already have ruled out.
             assert calleeEntry != null : "Failed to get entry node for callee: " + calleeSig +
-                    " (depth=" + depth + ", already processed=" + processedMethods.contains(calleeSig) +
-                    ", has body=" + callee.hasBody() + ")";
+                    " (depth=" + depth + ", has body=" + callee.hasBody() + ")";
 
             CFGEdge callEdge = new CFGEdge(
                     callSiteId,
@@ -302,6 +302,31 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 combinedCFG.addEdge(returnEdge);
             }
         }
+    }
+
+    /**
+     * Whether the call site currently being processed is the one that expands {@code calleeSig}.
+     *
+     * <p>A method body is inlined into the graph once, however many call sites it has, so its
+     * exit nodes can only return to one of them. Giving a second call site its own CALL edge
+     * would add a second RETURN edge to those same exit nodes, which claims that returning from
+     * either call can resume at either call's return site -- a path the program does not have,
+     * and a cycle back through the body that it does not have either. It also breaks the
+     * consumer, which allows a node only one fall-through successor and rejects the whole graph.
+     *
+     * <p>So the first call site to reach a method expands it and the rest are marked incomplete,
+     * the same treatment as a call whose target could not be pinned down. This keeps recursion
+     * finite too: a method is on this list before its own body is walked, so a recursive call
+     * site is a repeat by construction.
+     *
+     * <p>Expanding a separate copy per call site would remove the need for this and keep the
+     * pruning those call sites currently cost. It is the missing piece rather than a redesign:
+     * {@link #processedMethods}, {@link #methodEntryNodes} and {@link #methodExitNodes} are keyed
+     * by method alone, and would have to be keyed by call site as well so that each copy carries
+     * its own entry and exit nodes. See INTER_PROCEDURAL.md for what that costs.
+     */
+    private boolean ownsExpansionOf(MethodSignature calleeSig) {
+        return !processedMethods.contains(calleeSig);
     }
 
     /**

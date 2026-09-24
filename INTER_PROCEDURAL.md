@@ -54,13 +54,15 @@ The analysis is flow-insensitive and gives up rather than guessing. A receiver r
 an array, or a parameter has no traceable origin, so it falls back on the declared type plus its
 concrete application subtypes.
 
-Each call site ends up in one of three states:
+Each call site ends up in one of these states:
 
-| State | CALL/RETURN edges | Assertion point |
+| State | CALL/RETURN edges | Marked incomplete |
 | --- | --- | --- |
-| Exactly one target, provably | added | only if the callee contains one |
-| Several possible targets | none | the call site is flagged, if an application method is among them |
-| Nothing established (e.g. `invokedynamic`) | none | the call site is flagged |
+| Exactly one target, provably, not yet expanded | added | no |
+| Exactly one target, but already expanded elsewhere | none | yes -- see limitation 6 |
+| Several possible targets | none | yes, if an application method is among them |
+| Nothing established (e.g. `invokedynamic`) | none | yes |
+| Only library or blacklisted targets | none | no -- never inlined, so nothing is missing |
 
 Ambiguous call sites get no CALL edge on purpose. SWAT walks this graph in lockstep with real
 executions, so an edge into a body that does not actually run would desynchronise the branch
@@ -217,13 +219,15 @@ method. See the visualization section of README.md for all options.
    are missing from the graph even though one of them runs
    - Solution: a graph format that can express alternative callees
 
-6. **Shared Callees**: A method is inlined once no matter how many call sites it has, so its exit
-   node ends up with a RETURN edge per call site. SWAT's `SAGraph` allows a node only one
-   fall-through successor and refuses to load such a graph, which disables the static analysis for
-   that benchmark. Resolving more virtual calls inlines more methods and so runs into this more
-   often
-   - Solution: inline per call site, or leave repeat calls unexpanded and flag them the way
-     ambiguous dispatch is flagged
+6. **Shared Callees**: A method is inlined once however many call sites it has, so only the first
+   call site can be given call/return edges -- the rest are marked incomplete (see below). Those
+   call sites cost the pruning that would have been possible past them
+   - Solution: expand a copy per call site. `processedMethods`, `methodEntryNodes` and
+     `methodExitNodes` are keyed by method alone and would have to be keyed by call site as well,
+     so each copy carries its own entry and exit nodes. The cost is graph size: the worst callee
+     in `siena_prop1` has 45 call sites, and duplication compounds through the call tree up to the
+     depth limit. A fan-out threshold -- duplicate below it, mark incomplete above it -- would get
+     most of the precision for a fraction of the size
 
 ### Future Enhancements
 
