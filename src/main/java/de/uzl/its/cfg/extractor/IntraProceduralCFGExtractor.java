@@ -10,6 +10,7 @@ import sootup.core.jimple.common.stmt.JAssignStmt;
 import sootup.core.jimple.common.stmt.JIfStmt;
 import sootup.core.jimple.common.stmt.JThrowStmt;
 import sootup.core.jimple.common.stmt.Stmt;
+import sootup.core.jimple.javabytecode.stmt.JSwitchStmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
 import sootup.core.typehierarchy.TypeHierarchy;
@@ -87,6 +88,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         Map<Stmt, String> entryIds =
                 new PhantomGuardEmitter(cfg, stmtGraph, hierarchy).emit(stmts, stmtToId);
 
+        SwitchChainEmitter switchEmitter = new SwitchChainEmitter(cfg);
+
         // Set entry node (the first statement, or the first guard protecting it)
         cfg.setEntryNode(entryIds.get(stmtGraph.getStartingStmt()));
 
@@ -124,9 +127,13 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             } else if (stmt instanceof JIfStmt) {
                 // Conditional branch - distinguish true/false branches
                 handleConditionalBranch((JIfStmt) stmt, successors, sourceId, entryIds, cfg);
+            } else if (stmt instanceof JSwitchStmt) {
+                // A switch is one statement but several branches: SWAT tests the cases one at a
+                // time, so the graph spells the same tests out rather than fanning out here.
+                switchEmitter.emit((JSwitchStmt) stmt, sourceId, body, entryIds);
             } else {
-                // Normal flow, including branching statements (goto, switch) whose successors
-                // need no further labelling
+                // Normal flow, including branching statements (goto) whose successors need no
+                // further labelling
                 for (Stmt successor : successors) {
                     cfg.addEdge(new CFGEdge(sourceId, entryIds.get(successor), CFGEdge.EdgeType.NORMAL));
                 }
