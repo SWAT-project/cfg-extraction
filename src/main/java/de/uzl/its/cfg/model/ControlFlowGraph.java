@@ -70,6 +70,11 @@ public class ControlFlowGraph {
         return Collections.unmodifiableList(nodes);
     }
 
+    /** The node with this id, if the graph has one. */
+    public Optional<CFGNode> getNode(String nodeId) {
+        return nodes.stream().filter(node -> node.getId().equals(nodeId)).findFirst();
+    }
+
     public List<CFGEdge> getEdges() {
         return Collections.unmodifiableList(edges);
     }

@@ -64,9 +64,21 @@ Each call site ends up in one of three states:
 
 Ambiguous call sites get no CALL edge on purpose. SWAT walks this graph in lockstep with real
 executions, so an edge into a body that does not actually run would desynchronise the branch
-structure -- worse than having no edge. Flagging the call site as a possible assertion point
-instead keeps every path leading to it from being pruned, which is the conservative choice: a
-missed assertion point costs soundness, a spurious one only costs pruning.
+structure -- worse than having no edge.
+
+Instead such a node is marked **incomplete**, which says two things at once:
+
+* it is reported in `metadata.assertionPointIds`, so the paths *leading* to it stay interesting.
+  Without this the consumer, which marks interesting paths by walking predecessors, would prune
+  the path before ever arriving -- and a missed assertion point costs soundness, while a spurious
+  one only costs pruning.
+* the node carries `"isIncomplete": true`, so the graph is not trusted *beyond* it. The branches
+  of whatever was not expanded are missing here, and the consumer pairs graph against execution
+  positionally (no ids are matched), so every later pairing on the path would be shifted by them.
+  SWAT's `SANode.walk_till_branch()` stops at such a node and reports "no information", which it
+  already treats as "everything is interesting".
+
+`metadata.isIncomplete` is the graph-wide summary of whether any node is marked.
 
 Library overrides of library methods are deliberately not enumerated. They would resolve to
 library methods, which are never inlined anyway, so listing them would make good resolutions look
@@ -195,8 +207,11 @@ method. See the visualization section of README.md for all options.
 3. **Context Sensitivity**: Doesn't track calling contexts
    - Solution: Add context-sensitive analysis mode
 
-4. **Static Initializers**: `<clinit>` is never entered, so an assertion inside one is invisible
-   - Solution: add implicit call edges where a class is first used
+4. **Static Initializers**: `<clinit>` is never entered, so an assertion inside one is invisible.
+   This is consistent with the consumer rather than a hole: SWAT masks `<clinit>` subtrees out of
+   the lockstep walk entirely (`DFS.py`, `mask_sa_node`), because the graph does not model them,
+   and treats everything inside as interesting
+   - Solution (for precision, not soundness): add implicit call edges where a class is first used
 
 5. **Ambiguous Calls**: Several possible targets means no CALL edge at all, so the callee bodies
    are missing from the graph even though one of them runs

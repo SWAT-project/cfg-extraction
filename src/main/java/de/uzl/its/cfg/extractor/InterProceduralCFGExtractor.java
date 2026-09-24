@@ -88,7 +88,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
-        combinedCFG.addMetadata("isIncomplete", false); // potentially overwritten later
+        // Derived rather than written during the walk: a default assigned here would overwrite
+        // whatever the walk found, and one assigned before the walk would have to be kept in
+        // step with every place that marks a node.
+        combinedCFG.addMetadata("isIncomplete", combinedCFG.getNodes().stream().anyMatch(CFGNode::isIncomplete));
 
         logger.info("Inter-procedural CFG extracted: {} nodes, {} edges",
                 combinedCFG.getNodes().size(),
@@ -133,8 +136,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             methodEntryNodes.put(methodSig, dummyId);
             methodExitNodes.put(methodSig, Set.of(dummyId));
 
-            combinedCFG.addMetadata("isIncomplete", true);
-            this.assertionPointIds.add(dummyId);
+            markIncomplete(combinedCFG, dummyId);
             return;
         }
 
@@ -222,9 +224,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // uninteresting and be pruned. Flag the call site itself so those paths survive.
                 if (mayHideApplicationCode(dispatch)) {
                     logger.info("Unresolved dispatch at '{}' in {}: {} possible target(s); "
-                            + "marking call site as a possible assertion point",
+                            + "marking call site as incomplete",
                             stmt, methodSig, dispatch.getTargets().size());
-                    this.assertionPointIds.add(callSiteId);
+                    markIncomplete(combinedCFG, callSiteId);
                 }
                 continue;
             }
@@ -300,6 +302,24 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 combinedCFG.addEdge(returnEdge);
             }
         }
+    }
+
+    /**
+     * Records that the graph stops describing the program faithfully at {@code nodeId}.
+     *
+     * <p>Marks both halves of the same situation, which do different jobs and are both needed.
+     * Reporting the node as an assertion point keeps the paths <em>leading</em> to it from being
+     * pruned -- a consumer marks those by walking predecessors, so without it the path would be
+     * discarded before ever reaching the node. Setting the node's incomplete flag stops the graph
+     * being trusted <em>beyond</em> the node: the branches of whatever was not expanded are
+     * missing, and a consumer pairing this graph with a real execution positionally would have
+     * every later pairing on the path shifted by them.
+     */
+    private void markIncomplete(ControlFlowGraph combinedCFG, String nodeId) {
+        Optional<CFGNode> node = combinedCFG.getNode(nodeId);
+        assert node.isPresent() : "Cannot mark unknown node as incomplete: " + nodeId;
+        node.ifPresent(cfgNode -> cfgNode.setIncomplete(true));
+        this.assertionPointIds.add(nodeId);
     }
 
     /**

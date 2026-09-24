@@ -12,6 +12,22 @@ public class CFGNode {
     private final String stmtType;
     private final int lineNumber;
 
+    /**
+     * Whether the graph stops describing the program faithfully at this node.
+     *
+     * <p>Set where something could not be expanded -- a call whose target could not be pinned
+     * down, or one cut off by the recursion depth limit. The statements and branches of whatever
+     * was left out are missing from the graph, so a consumer that follows this graph in step with
+     * a real execution has to stop trusting it from here on: the execution will report branches
+     * that the graph has no counterpart for, and every later pairing along the path would be off
+     * by those.
+     *
+     * <p>Such a node is also reported as an assertion point, which is the other half of the same
+     * story: that keeps the paths <em>leading</em> here from being pruned, while this flag keeps
+     * the paths <em>beyond</em> here from being trusted.
+     */
+    private boolean isIncomplete;
+
     // Extension point: Add metadata for different analysis types
     private String metadata;
 
@@ -36,6 +52,14 @@ public class CFGNode {
 
     public int getLineNumber() {
         return lineNumber;
+    }
+
+    public boolean isIncomplete() {
+        return isIncomplete;
+    }
+
+    public void setIncomplete(boolean isIncomplete) {
+        this.isIncomplete = isIncomplete;
     }
 
     public String getMetadata() {
