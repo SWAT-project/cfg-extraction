@@ -730,8 +730,8 @@ Examples:
     group.add_argument('--engine', choices=['auto', 'graphviz', 'matplotlib'],
                        default='auto',
                        help='Layout backend (default: auto = graphviz if available)')
-    group.add_argument('--formats', default='png,svg',
-                       help='Comma separated output formats (default: png,svg). '
+    group.add_argument('--formats', default='svg',
+                       help='Comma separated output formats (e.g.: png,svg). '
                             'SVG stays sharp at any zoom level')
     group.add_argument('--dpi', type=int, default=96,
                        help='Raster resolution for png/jpg output (default: 96)')
