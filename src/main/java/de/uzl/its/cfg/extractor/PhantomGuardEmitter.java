@@ -31,28 +31,28 @@ import java.util.Map;
  * </pre>
  *
  * <p>Guards are emitted whether or not the method has a matching handler, because SWAT's visitor
- * guards unconditionally. Without a handler the false branch leads to a synthetic
- * "uncaught exception" node: the exception leaves the method, so unlike a return it must
- * <em>not</em> be registered as an exit node, or the inter-procedural pass would give it a RETURN
- * edge back into the caller. Propagating it into the caller's handlers is a separate concern and
- * is not modelled yet.
+ * guards unconditionally. Without a handler the false branch leads to the method's
+ * {@code uncaught[T]} node for the guard's exception type (see {@link EscapeNodes}): the exception
+ * leaves the method, so unlike a return it must <em>not</em> be registered as an exit node, or the
+ * inter-procedural pass would give it a RETURN edge back into the caller's return site. Where it
+ * does resume -- the handler of whichever caller frame catches it -- is decided at walk time.
  */
 public final class PhantomGuardEmitter {
-
-    private static final String UNCAUGHT_NODE_ID = "uncaught_exception";
 
     private final ControlFlowGraph cfg;
     private final sootup.core.graph.ControlFlowGraph<?> stmtGraph;
     private final TypeHierarchy hierarchy;
+    private final EscapeNodes escapes;
 
     private int guardCounter = 0;
-    private boolean uncaughtNodeCreated = false;
 
     public PhantomGuardEmitter(ControlFlowGraph cfg,
-            sootup.core.graph.ControlFlowGraph<?> stmtGraph, TypeHierarchy hierarchy) {
+            sootup.core.graph.ControlFlowGraph<?> stmtGraph, TypeHierarchy hierarchy,
+            EscapeNodes escapes) {
         this.cfg = cfg;
         this.stmtGraph = stmtGraph;
         this.hierarchy = hierarchy;
+        this.escapes = escapes;
     }
 
     /**
@@ -102,8 +102,11 @@ public final class PhantomGuardEmitter {
         for (Map.Entry<String, ClassType> guard : guardExceptions.entrySet()) {
             String guardId = guard.getKey();
             ClassType exceptionType = guard.getValue();
-            Stmt handler = findHandler(exceptionType, guardedStmts.get(guardId));
-            String target = handler != null ? entryIds.get(handler) : uncaughtNode();
+            // Guard exception types are precise -- the JVM throws exactly an
+            // ArrayIndexOutOfBoundsException -- so the most specific catching handler is the one.
+            Stmt handler = ExceptionHandlers.handlerFor(exceptionType,
+                    stmtGraph.exceptionalSuccessors(guardedStmts.get(guardId)), hierarchy);
+            String target = handler != null ? entryIds.get(handler) : escapes.nodeFor(exceptionType);
             // Kept short to stay readable when drawn along the edge; the guard node's statement
             // already names the exception type.
             cfg.addEdge(new CFGEdge(guardId, target,
@@ -111,45 +114,6 @@ public final class PhantomGuardEmitter {
         }
 
         return entryIds;
-    }
-
-    /**
-     * The handler that catches {@code exceptionType} when thrown by {@code guardedStmt}, or null
-     * if the exception leaves the method.
-     *
-     * <p>Guard exception types are precise -- the JVM throws exactly an
-     * {@code ArrayIndexOutOfBoundsException} -- so a handler catches it only if it declares that
-     * type or a supertype of it. Where several handlers qualify, Java's first-match-wins rule
-     * selects the most specific one: javac rejects a catch clause already covered by a preceding
-     * one, so for two handlers in a subtype relation the subtype necessarily comes first. That
-     * makes the choice derivable from the types alone, which matters because
-     * {@code exceptionalSuccessors()} returns a plain HashMap and has already lost the order.
-     */
-    private Stmt findHandler(ClassType exceptionType, Stmt guardedStmt) {
-        ClassType mostSpecific = null;
-        Stmt handler = null;
-        for (Map.Entry<ClassType, Stmt> candidate : stmtGraph.exceptionalSuccessors(guardedStmt).entrySet()) {
-            ClassType caughtType = candidate.getKey();
-            boolean catchesIt = caughtType.equals(exceptionType)
-                    || hierarchy.isSubtype(caughtType, exceptionType);
-            if (!catchesIt) {
-                continue;
-            }
-            if (mostSpecific == null || hierarchy.isSubtype(mostSpecific, caughtType)) {
-                mostSpecific = caughtType;
-                handler = candidate.getValue();
-            }
-        }
-        return handler;
-    }
-
-    private String uncaughtNode() {
-        if (!uncaughtNodeCreated) {
-            cfg.addNode(new CFGNode(UNCAUGHT_NODE_ID, "uncaught implicit exception",
-                    "UncaughtException", -1));
-            uncaughtNodeCreated = true;
-        }
-        return UNCAUGHT_NODE_ID;
     }
 
     private static CFGNode createGuardNode(String guardId, Guard guard, Stmt guardedStmt) {

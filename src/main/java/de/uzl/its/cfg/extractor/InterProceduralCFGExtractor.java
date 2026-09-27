@@ -12,6 +12,7 @@ import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
 import sootup.core.signatures.MethodSignature;
+import sootup.core.types.ClassType;
 import sootup.java.core.views.JavaView;
 
 import java.util.*;
@@ -41,16 +42,22 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final Set<MethodSignature> processedMethods;
     private final Map<MethodSignature, String> methodEntryNodes;
     private final Map<MethodSignature, Set<String>> methodExitNodes;
+    /** The {@code uncaught[T]} node of each exception type that can leave each method. */
+    private final Map<MethodSignature, Map<ClassType, String>> methodEscapeNodes;
+    /** Every expanded call site, for wiring EXCEPTIONAL_RETURN edges once all methods are in. */
+    private final List<ExpandedCall> expandedCalls;
     private final List<String> assertionPointIds;
     private final Set<String> methodPrefixBlacklist;
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
-        this.intraExtractor = new IntraProceduralCFGExtractor();
         this.receiverTypeResolver = new ReceiverTypeResolver(view);
+        this.intraExtractor = new IntraProceduralCFGExtractor(receiverTypeResolver);
         this.view = view;
         this.processedMethods = new HashSet<>();
         this.methodEntryNodes = new HashMap<>();
         this.methodExitNodes = new HashMap<>();
+        this.methodEscapeNodes = new HashMap<>();
+        this.expandedCalls = new ArrayList<>();
         this.assertionPointIds = new ArrayList<>();
         this.methodPrefixBlacklist = new HashSet<>();
 
@@ -83,8 +90,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 method.getDeclaringClassType().getClassName(),
                 ControlFlowGraph.AnalysisType.INTER_PROCEDURAL);
 
-        // Extract CFG recursively starting from entry point
-        extractMethodRecursively(method, combinedCFG, 0, 5);
+        // Extract CFG recursively starting from entry point. There is no depth limit: every method
+        // is expanded once however many call sites reach it (processedMethods), so construction is
+        // bounded by the number of reachable methods, recursion included.
+        extractMethodRecursively(method, combinedCFG, 0);
+        addExceptionalReturnEdges(combinedCFG);
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
@@ -100,8 +110,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         return combinedCFG;
     }
 
-    private void extractMethodRecursively(SootMethod method, ControlFlowGraph combinedCFG,
-            int depth, int maxDepth) {
+    private void extractMethodRecursively(SootMethod method, ControlFlowGraph combinedCFG, int depth) {
         MethodSignature methodSig = method.getSignature();
 
         // Prevent re-processing
@@ -123,28 +132,12 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         Map<String, String> oldToNewId = new HashMap<>();
         String methodPrefix = "m" + processedMethods.size() + "_";
 
-        if (depth > maxDepth) {
-            var dummyId = methodPrefix + "dummy";
-            CFGNode dummyNode = new CFGNode(
-                    dummyId,
-                    "unknown",
-                    "DUMMY (depth limit)",
-                    -1);
-            dummyNode.setMetadata("method: " + methodSig.toString());
-            combinedCFG.addNode(dummyNode);
-
-            methodEntryNodes.put(methodSig, dummyId);
-            methodExitNodes.put(methodSig, Set.of(dummyId));
-
-            markIncomplete(combinedCFG, dummyId);
-            return;
-        }
-
         // Extract intra-procedural CFG, keeping the node each statement became so that call
         // sites can be looked up by statement identity below
         IntraProceduralCFGExtractor.MethodCFG extraction = intraExtractor.extractMethodCFG(method, view);
         ControlFlowGraph methodCFG = extraction.cfg();
         Map<Stmt, String> nodeIdsByStmt = extraction.nodeIds();
+        Map<Stmt, String> entryIdsByStmt = extraction.entryIds();
 
         for (CFGNode node : methodCFG.getNodes()) {
             String newId = methodPrefix + node.getId();
@@ -156,6 +149,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                     node.getStmtType(),
                     node.getLineNumber());
             newNode.setMetadata("method: " + methodSig.toString());
+            newNode.setIncomplete(node.isIncomplete());
+            newNode.setException(node.getExceptionType(), node.getExceptionTypeChain());
             combinedCFG.addNode(newNode);
         }
 
@@ -184,6 +179,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             combinedCFG.addExitNode(newExitId);
         }
         methodExitNodes.put(methodSig, newExitIds);
+
+        Map<ClassType, String> newEscapeIds = new LinkedHashMap<>();
+        extraction.escapes().forEach((type, id) -> newEscapeIds.put(type, oldToNewId.get(id)));
+        methodEscapeNodes.put(methodSig, newEscapeIds);
 
         // Merge edges (intra-procedural)
         for (CFGEdge edge : methodCFG.getEdges()) {
@@ -255,29 +254,40 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
             SootMethod callee = calleeOpt.get();
 
-            if (!ownsExpansionOf(calleeSig)) {
-                logger.info("Call to already expanded method {} at '{}' in {}: "
-                        + "marking call site as incomplete",
+            // Recursively extract callee CFG. A callee that is already in the graph -- expanded by
+            // an earlier call site, or currently being expanded further up because the call is
+            // recursive -- is not expanded again: this call site gets its own CALL edge into the
+            // same body, and the walk's call stack keeps the two apart.
+            extractMethodRecursively(callee, combinedCFG, depth + 1);
+            String calleeEntry = methodEntryNodes.get(calleeSig);
+
+            if (calleeEntry == null) {
+                // Only a method without a body gets here -- native, or abstract where dispatch
+                // resolution should have ruled that out. Whatever it runs is not in the graph.
+                logger.info("Callee {} at '{}' in {} has no body: marking call site as incomplete",
                         calleeSig, stmt, methodSig);
                 markIncomplete(combinedCFG, callSiteId);
                 continue;
             }
 
-            // Recursively extract callee CFG
-            extractMethodRecursively(callee, combinedCFG, depth + 1, maxDepth);
-            String calleeEntry = methodEntryNodes.get(calleeSig);
+            // Where the caller resumes after the callee returns, and where after it throws.
+            String returnSiteId = findReturnSite(stmt, nodeIdsByStmt, methodCFG, oldToNewId);
 
-            // The expansion above was this call site's to make, so it should have produced an
-            // entry node. What is left is a method with no body at all -- abstract or native,
-            // which concrete dispatch resolution should already have ruled out.
-            assert calleeEntry != null : "Failed to get entry node for callee: " + calleeSig +
-                    " (depth=" + depth + ", has body=" + callee.hasBody() + ")";
+            assert returnSiteId != null : "Failed to find return site for call at statement: " + stmt +
+                    " in method: " + methodSig + " (call to: " + calleeSig + ")";
+
+            Map<ClassType, String> handlers = new LinkedHashMap<>();
+            body.getControlFlowGraph().exceptionalSuccessors(stmt).forEach((caughtType, handler) ->
+                    handlers.put(caughtType, oldToNewId.get(entryIdsByStmt.get(handler))));
+            Map<String, String> handlerNames = new LinkedHashMap<>();
+            handlers.forEach((type, id) -> handlerNames.put(type.getFullyQualifiedName(), id));
 
             CFGEdge callEdge = new CFGEdge(
                     callSiteId,
                     calleeEntry,
                     CFGEdge.EdgeType.CALL,
                     callee.getName());
+            callEdge.setCallContinuations(returnSiteId, handlerNames);
             combinedCFG.addEdge(callEdge);
             // Remove normal/fallthrough edge
             combinedCFG.removeEdges(
@@ -285,12 +295,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                             e -> e.getSource().equals(callSiteId) && e.getType().equals(EdgeType.NORMAL))
                             .toList());
 
-            // Add RETURN edges from callee exits to return site
-            String returnSiteId = findReturnSite(stmt, nodeIdsByStmt, methodCFG, oldToNewId);
-
-            assert returnSiteId != null : "Failed to find return site for call at statement: " + stmt +
-                    " in method: " + methodSig + " (call to: " + calleeSig + ")";
-
+            // Add RETURN edges from callee exits to this return site. With several call sites an
+            // exit gets one per return site; which of them a given return takes is the walk's to
+            // decide from its call stack. They stay in the graph so that backward reachability
+            // from an assert behind a return site still arrives at the callee.
             Set<String> calleeExits = methodExitNodes.get(calleeSig);
             assert calleeExits != null : "Failed to get exit nodes for callee: " + calleeSig;
 
@@ -301,32 +309,63 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                         CFGEdge.EdgeType.RETURN);
                 combinedCFG.addEdge(returnEdge);
             }
+
+            expandedCalls.add(new ExpandedCall(methodSig, calleeSig, handlers));
         }
     }
 
+    /** A call site that got a CALL edge, as far as exception unwinding needs to know it. */
+    private record ExpandedCall(MethodSignature caller, MethodSignature callee,
+            Map<ClassType, String> handlers) {
+    }
+
     /**
-     * Whether the call site currently being processed is the one that expands {@code calleeSig}.
+     * Adds an EXCEPTIONAL_RETURN edge from every {@code uncaught[T]} node to every handler that an
+     * exception leaving there can end up in.
      *
-     * <p>A method body is inlined into the graph once, however many call sites it has, so its
-     * exit nodes can only return to one of them. Giving a second call site its own CALL edge
-     * would add a second RETURN edge to those same exit nodes, which claims that returning from
-     * either call can resume at either call's return site -- a path the program does not have,
-     * and a cycle back through the body that it does not have either. It also breaks the
-     * consumer, which allows a node only one fall-through successor and rejects the whole graph.
+     * <p>The walk does not follow these: it resolves an escaping exception against its call stack,
+     * popping frames until one catches it. They exist for the same reason the RETURN edges do --
+     * backward reachability. An assert inside a caller's handler must make the paths leading to the
+     * throwing statement interesting, and those paths are only connected to it through here.
      *
-     * <p>So the first call site to reach a method expands it and the rest are marked incomplete,
-     * the same treatment as a call whose target could not be pinned down. This keeps recursion
-     * finite too: a method is on this list before its own body is walked, so a recursive call
-     * site is a repeat by construction.
-     *
-     * <p>Expanding a separate copy per call site would remove the need for this and keep the
-     * pruning those call sites currently cost. It is the missing piece rather than a redesign:
-     * {@link #processedMethods}, {@link #methodEntryNodes} and {@link #methodExitNodes} are keyed
-     * by method alone, and would have to be keyed by call site as well so that each copy carries
-     * its own entry and exit nodes. See INTER_PROCEDURAL.md for what that costs.
+     * <p>So the edges cover every stack the walk could have: from each call site of the throwing
+     * method, the handler that catches {@code T} there, or, if none does, the same question one
+     * frame further up. Handlers are matched with {@link ExceptionHandlers#handlerFor}, the rule the
+     * consumer applies at walk time.
      */
-    private boolean ownsExpansionOf(MethodSignature calleeSig) {
-        return !processedMethods.contains(calleeSig);
+    private void addExceptionalReturnEdges(ControlFlowGraph combinedCFG) {
+        Map<MethodSignature, List<ExpandedCall>> callsTo = new HashMap<>();
+        for (ExpandedCall call : expandedCalls) {
+            callsTo.computeIfAbsent(call.callee(), k -> new ArrayList<>()).add(call);
+        }
+        var hierarchy = view.getTypeHierarchy();
+        for (Map.Entry<MethodSignature, Map<ClassType, String>> method : methodEscapeNodes.entrySet()) {
+            for (Map.Entry<ClassType, String> escape : method.getValue().entrySet()) {
+                List<ClassType> chain = ExceptionHandlers.chainOf(escape.getKey(), hierarchy);
+                Set<String> targets = new LinkedHashSet<>();
+                collectHandlers(method.getKey(), chain, callsTo, new HashSet<>(), targets);
+                for (String target : targets) {
+                    combinedCFG.addEdge(new CFGEdge(escape.getValue(), target,
+                            CFGEdge.EdgeType.EXCEPTIONAL_RETURN, "unwind"));
+                }
+            }
+        }
+    }
+
+    private void collectHandlers(MethodSignature method, List<ClassType> chain,
+            Map<MethodSignature, List<ExpandedCall>> callsTo, Set<MethodSignature> visited,
+            Set<String> targets) {
+        if (!visited.add(method)) {
+            return;
+        }
+        for (ExpandedCall call : callsTo.getOrDefault(method, List.of())) {
+            String handler = ExceptionHandlers.handlerFor(chain, call.handlers());
+            if (handler != null) {
+                targets.add(handler);
+            } else {
+                collectHandlers(call.caller(), chain, callsTo, visited, targets);
+            }
+        }
     }
 
     /**

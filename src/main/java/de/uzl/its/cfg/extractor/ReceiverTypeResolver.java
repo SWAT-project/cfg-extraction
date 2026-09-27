@@ -15,6 +15,7 @@ import sootup.core.jimple.common.expr.JStaticInvokeExpr;
 import sootup.core.jimple.common.ref.JThisRef;
 import sootup.core.jimple.common.stmt.AbstractDefinitionStmt;
 import sootup.core.jimple.common.stmt.JReturnStmt;
+import sootup.core.jimple.common.stmt.JThrowStmt;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.SootClass;
 import sootup.core.model.SootMethod;
@@ -164,6 +165,86 @@ public class ReceiverTypeResolver {
         return callSite.asInvokableStmt().getInvokeExpr()
                 .map(invoke -> resolve(caller, invoke, new HashSet<>()))
                 .orElseGet(() -> new Dispatch(Set.of(), Precision.EXACT));
+    }
+
+    /**
+     * The possible runtime types of the value {@code throwStmt} throws, or empty when they cannot
+     * be pinned down.
+     *
+     * <p>Traced like a receiver, bounded by {@code java.lang.Throwable}: {@code assert false}
+     * compiles to {@code $stack = new AssertionError; throw $stack} and resolves exactly, while a
+     * rethrow of {@code @caughtexception} or of a parameter resolves to unknown. An empty set means
+     * the value is provably null, and {@code throw null} raises a {@code NullPointerException}.
+     */
+    public Optional<Set<ClassType>> thrownTypes(SootMethod method, JThrowStmt throwStmt) {
+        ClassType throwable = view.getIdentifierFactory().getClassType("java.lang.Throwable");
+        Set<Object> visiting = new HashSet<>();
+        Value thrown = throwStmt.getOp();
+        if (!(thrown instanceof Local) || !method.hasBody()) {
+            return typesOf(method, thrown, throwable, visiting);
+        }
+        // Unlike a receiver, the thrown local is traced through the definitions that reach the
+        // throw, not through all of them: javac reuses the slot of a local thrown in a try block
+        // for the catch clauses' exception variables, so a flow-insensitive union would see
+        // `b = @caughtexception` next to `b = new B` and give up on a throw it can pin down.
+        List<AbstractDefinitionStmt> definitions =
+                reachingDefinitions(method.getBody().getControlFlowGraph(), (Local) thrown, throwStmt);
+        if (definitions.isEmpty()) {
+            return Optional.empty();
+        }
+        Set<ClassType> types = new LinkedHashSet<>();
+        for (AbstractDefinitionStmt definition : definitions) {
+            Optional<Set<ClassType>> definitionTypes = typesOf(method, definition.getRightOp(), throwable, visiting);
+            if (definitionTypes.isEmpty()) {
+                return Optional.empty();
+            }
+            types.addAll(definitionTypes.get());
+        }
+        return Optional.of(types);
+    }
+
+    /**
+     * The definitions of {@code local} that may reach {@code use}, found by walking predecessors
+     * backwards until each path hits one.
+     *
+     * <p>A handler is entered from any statement of the blocks it traps, and such a statement may
+     * throw before its own assignment completes. So once a path has crossed an exceptional edge,
+     * a definition on it is collected but does not end the path: the value from before it may still
+     * be the one that reaches. That is an over-approximation, which only ever costs precision.
+     */
+    private static List<AbstractDefinitionStmt> reachingDefinitions(
+            sootup.core.graph.ControlFlowGraph<?> graph, Local local, Stmt use) {
+        List<AbstractDefinitionStmt> definitions = new ArrayList<>();
+        // Stmt has no structural equality, so identity is what tells statements apart here.
+        Set<Stmt> seenNormal = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Set<Stmt> seenExceptional = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.Deque<Map.Entry<Stmt, Boolean>> worklist = new java.util.ArrayDeque<>();
+        java.util.function.BiConsumer<Stmt, Boolean> enqueuePredecessors = (stmt, exceptional) -> {
+            for (Stmt pred : graph.predecessors(stmt)) {
+                worklist.push(Map.entry(pred, exceptional));
+            }
+            for (Stmt pred : graph.exceptionalPredecessors(stmt)) {
+                worklist.push(Map.entry(pred, true));
+            }
+        };
+        enqueuePredecessors.accept(use, false);
+        while (!worklist.isEmpty()) {
+            Map.Entry<Stmt, Boolean> item = worklist.pop();
+            Stmt stmt = item.getKey();
+            boolean exceptional = item.getValue();
+            if (!(exceptional ? seenExceptional : seenNormal).add(stmt)) {
+                continue;
+            }
+            boolean defines = stmt instanceof AbstractDefinitionStmt
+                    && local.equals(((AbstractDefinitionStmt) stmt).getLeftOp());
+            if (defines && !definitions.contains(stmt)) {
+                definitions.add((AbstractDefinitionStmt) stmt);
+            }
+            if (!defines || exceptional) {
+                enqueuePredecessors.accept(stmt, exceptional);
+            }
+        }
+        return definitions;
     }
 
     /**

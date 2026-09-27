@@ -58,8 +58,7 @@ Each call site ends up in one of these states:
 
 | State | CALL/RETURN edges | Marked incomplete |
 | --- | --- | --- |
-| Exactly one target, provably, not yet expanded | added | no |
-| Exactly one target, but already expanded elsewhere | none | yes -- see limitation 6 |
+| Exactly one target, provably | added (also for repeat and recursive calls) | no |
 | Several possible targets | none | yes, if an application method is among them |
 | Nothing established (e.g. `invokedynamic`) | none | yes |
 | Only library or blacklisted targets | none | no -- never inlined, so nothing is missing |
@@ -94,11 +93,63 @@ Starting from the entry point method:
 2. **Rename nodes** with method-specific prefixes (`m1_node_0`, `m2_node_1`, etc.)
 3. **Find call sites** (statements with invoke expressions)
 4. **Resolve the callee** as described above
-5. **Recursively extract** callee CFGs
-6. **Add CALL edge** from call site to callee entry
+5. **Recursively extract** callee CFGs -- each method once, however many call sites reach it
+6. **Add CALL edge** from call site to callee entry, carrying the call site's return address and
+   handler map (see "Call stack" below)
 7. **Add RETURN edges** from all callee exits to return site
+8. Once every method is in: **add EXCEPTIONAL_RETURN edges** from each `uncaught[T]` node to every
+   caller handler an exception `T` can unwind to
 
-### 3. Node Metadata
+### 3. Call Stack, Not Copies
+
+A method body is in the graph once, so an exit node of a method with several call sites has a
+RETURN edge to each of their return sites, and the graph alone cannot say which one a return
+goes to. The consumer does not need it to: SWAT walks the graph with a **call stack**. On a CALL
+edge it pushes the call site; at an exit it pops and resumes at that frame's `returnSite`.
+Recursion works the same way -- a recursive call site gets a CALL edge back into the body it sits
+in -- so there is no depth limit: `processedMethods` alone bounds construction.
+
+The RETURN edges stay in the graph although the walk does not follow them. Backward reachability
+from an assert behind a return site has to arrive at the callee through them; without them every
+path before the call would be pruned.
+
+### 4. Exceptions
+
+An exception that leaves a method goes to that method's `uncaught[T]` node, one per exception type
+(`stmtType: UncaughtException`). It is **not** an exit node: control does not resume at the
+caller's return site. The node carries `exceptionType` and `exceptionTypeChain` (`T` and its
+superclasses up to `Throwable`), and each CALL edge carries `handlers`, the call site's own
+`{caughtType -> handler node}` map from `exceptionalSuccessors(callStmt)`. At an `uncaught[T]`
+node the walk pops frames until one has a handler for a type in the chain -- first match in chain
+order, i.e. the most specific handler -- and resumes there. An empty stack means the exception
+leaves `main`.
+
+Two things end up at `uncaught[T]`:
+
+* a phantom guard's false branch with no local handler (the guard's exception type is precise);
+* an explicit `throw` with no local handler, via a `THROW` edge. The thrown value is traced to
+  its runtime type with `ReceiverTypeResolver`, through the definitions that *reach* the throw
+  (javac reuses a thrown local's slot for catch variables). A throw caught locally gets a `THROW`
+  edge to that handler instead. If the type is unknown (a rethrow of `@caughtexception`, a
+  parameter) or its possible types reach different destinations, the throw node is marked
+  incomplete.
+
+`EXCEPTIONAL_RETURN` edges (`uncaught[T]` -> every handler it can unwind to, possibly several
+frames up) exist for backward reachability only, like RETURN edges. They are computed with the
+same handler rule the walk uses (`ExceptionHandlers`), so the two cannot disagree.
+
+### 5. Reference Comparisons
+
+SWAT's `RefEqualityTransformer` rewrites every `IF_ACMPEQ` / `IF_ACMPNE` into a call to
+`UtilInstrumented.refEquals(a, b)` plus an `IFNE` / `IFEQ` on its result. `UtilInstrumented` is
+instrumented, so the helper reports one branch (`!shouldUseValueEquality(a, b)`) and, when that is
+taken, a second (`a != b`) before the rewritten comparison reports its own. `RefEqualityEmitter`
+puts the same two branches ahead of every reference `==` / `!=` as `RefEqualityCheck` nodes.
+Null checks compile to `IFNULL` / `IFNONNULL` and are left alone. Without these nodes the walk falls
+two events behind at every reference comparison; this was first observed on
+`MinePump/spec1-5_product1` as a false SAFE.
+
+### 6. Node Metadata
 
 Each node includes metadata about which method it belongs to:
 
@@ -142,7 +193,9 @@ The inter-procedural CFG contains:
   "source": "m1_node_15",
   "target": "m3_node_0",
   "type": "CALL",
-  "label": "ack"
+  "label": "ack",
+  "returnSite": "m1_node_16",
+  "handlers": { "java.lang.ArithmeticException": "m1_node_20" }
 }
 ```
 
@@ -152,19 +205,6 @@ The inter-procedural CFG contains:
   "target": "m1_node_16",
   "type": "RETURN"
 }
-```
-
-## Depth Limit
-
-To prevent infinite recursion (e.g., recursive methods), the analysis has a **depth limit of 5**:
-
-```java
-extractMethodRecursively(method, combinedCFG, depth + 1, maxDepth=5);
-```
-
-Methods beyond this depth are not inlined. You can adjust this in:
-```
-src/main/java/com/cfgextractor/extractor/InterProceduralCFGExtractor.java:70
 ```
 
 ## Visualization
@@ -192,7 +232,9 @@ method. See the visualization section of README.md for all options.
 - Green solid: TRUE branch
 - Red solid: FALSE branch
 - Green/red dashed: phantom guard branches (safe / exception)
-- Orange dashed: EXCEPTION edges
+- Orange dashed: EXCEPTION edges (SootUp-inferred; the walk does not follow them)
+- Orange solid: THROW edges
+- Dark red dotted: EXCEPTIONAL_RETURN edges
 - Dark grey solid: Normal flow
 
 ## Limitations & Future Work
@@ -203,11 +245,16 @@ method. See the visualization section of README.md for all options.
    so the call site falls back on the declared type and is usually reported as ambiguous
    - Solution: propagate types through fields and across call sites (a points-to analysis)
 
-2. **Depth Limit**: Recursive methods are cut off
-   - Solution: Use cycle detection instead of depth limit
+2. **Unmodelled exceptions**: exceptions SWAT does not guard -- a `NullPointerException`, a
+   `ClassCastException`, anything thrown inside library code -- reach a handler without the walk
+   noticing. It keeps following the normal successor while the execution is in the handler, so
+   the two drift apart. The graph has EXCEPTION edges for the local cases, but following them
+   would need the walk to track alternatives, and the unguarded escapes have no edges at all
+   - Solution: a walk over sets of positions, or incomplete markers on such statements
 
-3. **Context Sensitivity**: Doesn't track calling contexts
-   - Solution: Add context-sensitive analysis mode
+3. **Nested try blocks**: of two handlers catching `T`, the one with the more specific type is
+   chosen. An inner `catch (Exception e)` really shadows an outer `catch (RuntimeException e)`,
+   but SootUp's handler map has lost the order
 
 4. **Static Initializers**: `<clinit>` is never entered, so an assertion inside one is invisible.
    This is consistent with the consumer rather than a hole: SWAT masks `<clinit>` subtrees out of
@@ -219,39 +266,7 @@ method. See the visualization section of README.md for all options.
    are missing from the graph even though one of them runs
    - Solution: a graph format that can express alternative callees
 
-6. **Shared Callees**: A method is inlined once however many call sites it has, so only the first
-   call site can be given call/return edges -- the rest are marked incomplete (see below). Those
-   call sites cost the pruning that would have been possible past them
-   - Solution: expand a copy per call site. `processedMethods`, `methodEntryNodes` and
-     `methodExitNodes` are keyed by method alone and would have to be keyed by call site as well,
-     so each copy carries its own entry and exit nodes. The cost is graph size: the worst callee
-     in `siena_prop1` has 45 call sites, and duplication compounds through the call tree up to the
-     depth limit. A fan-out threshold -- duplicate below it, mark incomplete above it -- would get
-     most of the precision for a fraction of the size
-
 ### Future Enhancements
-
-#### Context-Sensitive Analysis
-
-Add calling context to node IDs:
-
-```java
-// Instead of: m2_node_5
-// Use: m2_[main->ack]_node_5  (called from main)
-//      m2_[ack->ack]_node_5   (called from ack recursively)
-```
-
-This enables:
-- More precise data flow analysis
-- Better taint tracking
-- Accurate constant propagation
-
-#### Smart Inlining
-
-Instead of fixed depth limit, use heuristics:
-- Inline small methods completely
-- Summarize large methods
-- Detect and handle cycles specially
 
 #### More Precise Receiver Types
 

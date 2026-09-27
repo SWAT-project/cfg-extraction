@@ -15,9 +15,11 @@ import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
 import sootup.core.typehierarchy.TypeHierarchy;
 import sootup.core.types.ClassType;
+import sootup.java.core.JavaIdentifierFactory;
 import sootup.java.core.views.JavaView;
 
 import java.util.*;
+
 
 /**
  * Extracts intra-procedural control flow graphs (single method analysis).
@@ -35,8 +37,25 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
      * {@code writer.println(name)} calls in different branches produce the same Jimple), and they
      * are separate nodes. {@link Stmt} has no structural equality, so this map distinguishes them
      * by identity the way the extraction itself does.
+     *
+     * @param nodeIds  the node each statement became, i.e. where its <em>outgoing</em> edges start
+     * @param entryIds where an edge <em>into</em> each statement has to arrive: the head of its
+     *                 phantom guard chain if it has one, otherwise its own node
+     * @param escapes  the {@code uncaught[T]} node of every exception type that can leave the
+     *                 method, whether raised by a phantom guard or by an explicit {@code throw}
      */
-    public record MethodCFG(ControlFlowGraph cfg, Map<Stmt, String> nodeIds) {
+    public record MethodCFG(ControlFlowGraph cfg, Map<Stmt, String> nodeIds, Map<Stmt, String> entryIds,
+            Map<ClassType, String> escapes) {
+    }
+
+    /** Traces thrown values to their type; shared so that its caches outlive a single method. */
+    private ReceiverTypeResolver typeResolver;
+
+    public IntraProceduralCFGExtractor() {
+    }
+
+    public IntraProceduralCFGExtractor(ReceiverTypeResolver typeResolver) {
+        this.typeResolver = typeResolver;
     }
 
     @Override
@@ -56,7 +75,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Check if method has a body (not abstract/native)
         if (!method.hasBody()) {
             logger.warn("Method {} has no body (abstract or native)", methodSig);
-            return new MethodCFG(cfg, Map.of());
+            return new MethodCFG(cfg, Map.of(), Map.of(), Map.of());
         }
 
         Body body = method.getBody();
@@ -81,12 +100,19 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
 
         TypeHierarchy hierarchy = view.getTypeHierarchy();
         SafeStmtExceptionAnalyzer exceptionAnalyzer = new SafeStmtExceptionAnalyzer(hierarchy);
+        EscapeNodes escapes = new EscapeNodes(cfg, hierarchy);
+        if (typeResolver == null) {
+            typeResolver = new ReceiverTypeResolver(view);
+        }
+        var assertionPointIds = new ArrayList<String>();
 
         // Insert SWAT's phantom branches ahead of the risky statements. Every edge that targets a
         // statement from here on has to go through entryIds so that it lands on the head of that
         // statement's guard chain instead of bypassing it.
         Map<Stmt, String> entryIds =
-                new PhantomGuardEmitter(cfg, stmtGraph, hierarchy).emit(stmts, stmtToId);
+                new PhantomGuardEmitter(cfg, stmtGraph, hierarchy, escapes).emit(stmts, stmtToId);
+        // Likewise for the branches SWAT's reference-equality helper adds ahead of every IF_ACMP*.
+        entryIds = new RefEqualityEmitter(cfg).emit(stmts, stmtToId, entryIds);
 
         SwitchChainEmitter switchEmitter = new SwitchChainEmitter(cfg);
 
@@ -116,14 +142,15 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             // Normal flow, independent of the exceptional flow above: stmtGraph.successors() is
             // unexceptional-only, and a statement inside a try block both falls through to its
             // successor and can branch to its handler.
-            if (successors.isEmpty()) {
-                // An exit node (return, or a throw that no handler in this method catches). A
-                // throw that *is* caught locally keeps flowing inside the method, so it is not
-                // an exit -- treating it as one would give it a bogus inter-procedural RETURN
-                // edge back into the caller.
-                if (reachableHandlers.isEmpty()) {
-                    cfg.addExitNode(sourceId);
-                }
+            if (stmt instanceof JThrowStmt) {
+                // A throw never resumes at the caller's return site, whether or not something in
+                // this method catches it, so it is never an exit node -- treating it as one would
+                // give it a bogus inter-procedural RETURN edge back into the caller.
+                emitThrow(method, (JThrowStmt) stmt, sourceId, stmtGraph, entryIds, escapes,
+                        hierarchy, cfg, assertionPointIds);
+            } else if (successors.isEmpty()) {
+                // An exit node: a return.
+                cfg.addExitNode(sourceId);
             } else if (stmt instanceof JIfStmt) {
                 // Conditional branch - distinguish true/false branches
                 handleConditionalBranch((JIfStmt) stmt, successors, sourceId, entryIds, cfg);
@@ -141,7 +168,6 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         }
 
         // Find assertions
-        var assertionPointIds = new ArrayList<String>();
         for (var throwStmt : stmts) {
             if (throwStmt instanceof JThrowStmt) {
                 var thrownValue = throwStmt.getUses().get(0);
@@ -171,7 +197,64 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         logger.info("Extracted CFG with {} nodes and {} edges",
                 cfg.getNodes().size(), cfg.getEdges().size());
 
-        return new MethodCFG(cfg, stmtToId);
+        return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap());
+    }
+
+    /**
+     * Wires an explicit {@code throw} to where it transfers control: the local handler that catches
+     * the thrown value, or the method's {@code uncaught[T]} node if none does.
+     *
+     * <p>The value is traced to its runtime type rather than trusting its static type, which for a
+     * rethrow is often just {@code Throwable} and would match every handler. Where the trace pins
+     * down one destination the throw gets a single {@link CFGEdge.EdgeType#THROW} edge, which the
+     * consumer follows like a fall-through: SWAT reports no branch for an {@code ATHROW}, so the
+     * walk passes straight through to the handler. Where it does not -- the type is unknown, or its
+     * possible types reach different destinations -- there is nothing faithful to follow, and the
+     * node is marked incomplete instead.
+     */
+    private void emitThrow(SootMethod method, JThrowStmt throwStmt, String sourceId,
+            sootup.core.graph.ControlFlowGraph<?> stmtGraph, Map<Stmt, String> entryIds,
+            EscapeNodes escapes, TypeHierarchy hierarchy, ControlFlowGraph cfg,
+            List<String> assertionPointIds) {
+        Optional<Set<ClassType>> thrownTypes = typeResolver.thrownTypes(method, throwStmt);
+        if (thrownTypes.isEmpty()) {
+            logger.info("Throw of untraceable value at '{}' in {}: marking as incomplete",
+                    throwStmt, method.getSignature());
+            markIncomplete(cfg, sourceId, assertionPointIds);
+            return;
+        }
+        Set<ClassType> types = thrownTypes.get();
+        if (types.isEmpty()) {
+            // Provably null: the JVM raises a NullPointerException instead.
+            types = Set.of(JavaIdentifierFactory.getInstance().getClassType("java.lang.NullPointerException"));
+        }
+
+        // A destination is a local handler statement or, for an escaping exception, its type. The
+        // uncaught[T] node is only created once the throw is known to be wired to it, so that an
+        // ambiguous throw leaves no orphaned escape behind.
+        Map<ClassType, Stmt> handlers = stmtGraph.exceptionalSuccessors(throwStmt);
+        Set<Object> destinations = new LinkedHashSet<>();
+        for (ClassType type : types) {
+            Stmt handler = ExceptionHandlers.handlerFor(type, handlers, hierarchy);
+            destinations.add(handler != null ? handler : type);
+        }
+        if (destinations.size() != 1) {
+            logger.info("Throw at '{}' in {} may reach {} destinations: marking as incomplete",
+                    throwStmt, method.getSignature(), destinations.size());
+            markIncomplete(cfg, sourceId, assertionPointIds);
+            return;
+        }
+        Object destination = destinations.iterator().next();
+        String targetId = destination instanceof Stmt
+                ? entryIds.get((Stmt) destination)
+                : escapes.nodeFor((ClassType) destination);
+        cfg.addEdge(new CFGEdge(sourceId, targetId, CFGEdge.EdgeType.THROW, "throw"));
+    }
+
+    /** See {@code InterProceduralCFGExtractor.markIncomplete}; the two halves go together. */
+    private static void markIncomplete(ControlFlowGraph cfg, String nodeId, List<String> assertionPointIds) {
+        cfg.getNode(nodeId).orElseThrow().setIncomplete(true);
+        assertionPointIds.add(nodeId);
     }
 
     private CFGNode createNode(String nodeId, Stmt stmt) {

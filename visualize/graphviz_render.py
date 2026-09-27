@@ -40,6 +40,8 @@ EDGE_STYLE: Dict[str, Dict[str, Any]] = {
     'TRUE_BRANCH':          dict(color='#2e7d32', style='solid',  weight=6),
     'FALSE_BRANCH':         dict(color='#c62828', style='solid',  weight=6),
     'EXCEPTION':            dict(color='#ef6c00', style='dashed', weight=1),
+    # An explicit throw, to its local handler or to the method's uncaught[T] node.
+    'THROW':                dict(color='#ef6c00', style='solid',  weight=4),
     # Phantom guards mirror SWAT's explicit branches around implicit exceptions.
     # They keep the colours of the real branches they stand in for and are set
     # apart by being dashed rather than solid.
@@ -47,6 +49,9 @@ EDGE_STYLE: Dict[str, Dict[str, Any]] = {
     'PHANTOM_FALSE_BRANCH': dict(color='#c62828', style='dashed', weight=2),
     'CALL':                 dict(color='#1565c0', style='dotted', weight=4),
     'RETURN':               dict(color='#7b1fa2', style='dotted', weight=0,
+                                 constraint=False),
+    # uncaught[T] -> a handler in some caller; the exceptional counterpart of RETURN.
+    'EXCEPTIONAL_RETURN':   dict(color='#b71c1c', style='dotted', weight=0,
                                  constraint=False),
     'CALLBACK':             dict(color='#00838f', style='dashdot', weight=1,
                                  constraint=False),
@@ -61,6 +66,8 @@ EDGE_FALLBACK_LABEL = {
     'PHANTOM_TRUE_BRANCH': 'safe',
     'PHANTOM_FALSE_BRANCH': 'exception',
     'EXCEPTION': 'throw',
+    'THROW': 'throw',
+    'EXCEPTIONAL_RETURN': 'unwind',
 }
 
 # Role colours for the node header band. Roles are checked in this order.
@@ -222,7 +229,7 @@ class CFGModel:
         self.incoming: Dict[str, List[str]] = {}
         for edge in self.edges:
             edge_type = edge.get('type')
-            if edge_type not in ('CALL', 'CALLBACK', 'RETURN'):
+            if edge_type not in ('CALL', 'CALLBACK', 'RETURN', 'EXCEPTIONAL_RETURN'):
                 continue
             src, dst = edge.get('source'), edge.get('target')
             if src not in self.block_of or dst not in self.block_of:
@@ -237,6 +244,11 @@ class CFGModel:
                     f'\u21b5 returns to {dst_name} · {dst}')
                 self.incoming.setdefault(dst_block.dot_id, []).append(
                     f'\u21b3 returns from {src_name} · {src}')
+            elif edge_type == 'EXCEPTIONAL_RETURN':
+                self.outgoing.setdefault(src_block.dot_id, []).append(
+                    f'\u21b5 unwinds to {dst_name} · {dst}')
+                self.incoming.setdefault(dst_block.dot_id, []).append(
+                    f'\u21b3 catches from {src_name} · {src}')
             else:
                 self.outgoing.setdefault(src_block.dot_id, []).append(
                     f'\u2192 calls {dst_name} · {dst}')
@@ -353,7 +365,7 @@ class CFGModel:
     # Edge types that carry control flow inside a method, most "fall through
     # like" first. The order decides which successor is laid out next.
     _FLOW_PREFERENCE = ['NORMAL', 'TRUE_BRANCH', 'PHANTOM_TRUE_BRANCH',
-                        'FALSE_BRANCH', 'PHANTOM_FALSE_BRANCH', 'EXCEPTION',
+                        'FALSE_BRANCH', 'PHANTOM_FALSE_BRANCH', 'THROW', 'EXCEPTION',
                         'JUMP']
 
     def _order_blocks(self):
@@ -371,7 +383,7 @@ class CFGModel:
             src, dst = edge.get('source'), edge.get('target')
             if src not in self.block_of or dst not in self.block_of:
                 continue
-            if edge.get('type') in ('CALL', 'RETURN', 'CALLBACK'):
+            if edge.get('type') in ('CALL', 'RETURN', 'CALLBACK', 'EXCEPTIONAL_RETURN'):
                 continue
             src_block, dst_block = self.block_of[src], self.block_of[dst]
             if src_block is dst_block:
@@ -434,7 +446,7 @@ class CFGModel:
             return 'guard'
         if ids & getattr(self, 'call_sites', set()):
             return 'call'
-        if types & {'JIfStmt', 'JSwitchStmt', 'SwitchCase'}:
+        if types & {'JIfStmt', 'JSwitchStmt', 'SwitchCase', 'RefEqualityCheck'}:
             return 'branch'
         return 'plain'
 
@@ -602,7 +614,8 @@ def _cluster_label(model: CFGModel, info: MethodInfo, node_count: int,
 def _legend_label(model: CFGModel, opts: RenderOptions) -> str:
     present = {e.get('type', 'NORMAL') for e in model.edges}
     order = ['NORMAL', 'TRUE_BRANCH', 'FALSE_BRANCH', 'PHANTOM_TRUE_BRANCH',
-             'PHANTOM_FALSE_BRANCH', 'EXCEPTION', 'CALL', 'RETURN', 'CALLBACK']
+             'PHANTOM_FALSE_BRANCH', 'THROW', 'EXCEPTION', 'CALL', 'RETURN',
+             'EXCEPTIONAL_RETURN', 'CALLBACK']
     glyph = {'solid': '───', 'dashed': '─ ─ ',
              'dotted': '· · ·', 'dashdot': '─ · ─'}
     edge_cells = []
@@ -752,7 +765,7 @@ def build_dot(cfg: Dict[str, Any], opts: RenderOptions) -> str:
         for block in model.blocks:
             ins = incoming.get(block.dot_id, [])
             outs = [e for e in outgoing.get(block.dot_id, [])
-                    if e.get('type') != 'RETURN']
+                    if e.get('type') not in ('RETURN', 'EXCEPTIONAL_RETURN')]
             if len(ins) < opts.clone_threshold or outs:
                 continue
             index = model.blocks.index(block)
@@ -878,7 +891,7 @@ def build_dot(cfg: Dict[str, Any], opts: RenderOptions) -> str:
             continue  # both ends were filtered out by --focus
 
         # Cross-method edges point at the exact statement they leave from.
-        use_port = edge_type in ('CALL', 'RETURN', 'CALLBACK', 'EXCEPTION')
+        use_port = edge_type in ('CALL', 'RETURN', 'CALLBACK', 'EXCEPTION', 'EXCEPTIONAL_RETURN')
         tail = endpoint(src_id, use_port, True)
         head = (stub_for_edge[id(edge)] if id(edge) in stub_for_edge
                 else endpoint(dst_id, use_port, False))
@@ -908,7 +921,7 @@ def build_dot(cfg: Dict[str, Any], opts: RenderOptions) -> str:
         if label:
             attrs['label'] = f' {label} '
             attrs['fontcolor'] = style['color']
-        if edge_type in ('CALL', 'RETURN', 'CALLBACK'):
+        if edge_type in ('CALL', 'RETURN', 'CALLBACK', 'EXCEPTIONAL_RETURN'):
             attrs['penwidth'] = 1.6
             attrs['arrowhead'] = 'vee'
         lines.append(f'  {tail} -> {head} [' + _attrs(attrs) + '];')
