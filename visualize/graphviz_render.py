@@ -476,12 +476,36 @@ class RenderOptions:
     layout: str = 'lanes'            # 'lanes' | 'call-tree'
     annotate_calls: bool = True
     clone_threshold: int = 6         # 0 disables hub cloning
+    # SWAT's pruning, per node id: 'interesting', 'context' or 'pruned' (see swat_marking.py).
+    # None draws no marking.
+    marking: Optional[Dict[str, str]] = None
 
 
-def _wrap_cell(text: str, width: int) -> str:
+# How SWAT's marking is drawn. A pruned statement is struck through and greyed out; one that is
+# only interesting in some calling contexts gets an amber background. Branch edges into such
+# statements -- where DFS actually decides to prune -- are recoloured the same way.
+MARK_STYLE = {
+    'pruned':  dict(row='#e8e8e8', text='#9e9e9e', edge='#9e9e9e', label='pruned',
+                    legend='pruned: no assert reachable under any call stack'),
+    'context': dict(row='#fff1c1', text=None, edge='#e0a100', label='context',
+                    legend='context: interesting only under some call stacks'),
+}
+BRANCH_EDGES = {'TRUE_BRANCH', 'FALSE_BRANCH', 'PHANTOM_TRUE_BRANCH', 'PHANTOM_FALSE_BRANCH'}
+
+
+def _mark_of(opts: 'RenderOptions', node_id: str) -> Optional[str]:
+    if not opts.marking:
+        return None
+    mark = opts.marking.get(node_id)
+    return mark if mark in MARK_STYLE else None
+
+
+def _wrap_cell(text: str, width: int, strike: bool = False) -> str:
     """HTML for one statement line, wrapped and left aligned."""
     lines = textwrap.wrap(text, width=width, break_long_words=True,
                           break_on_hyphens=False, subsequent_indent='    ') or ['']
+    if strike:
+        return ''.join(f'<s>{_esc(line)}</s><br align="left"/>' for line in lines)
     return ''.join(f'{_esc(line)}<br align="left"/>' for line in lines)
 
 
@@ -505,6 +529,9 @@ def _block_label(model: CFGModel, block: Block, opts: RenderOptions,
         kind = f'{len(stmts)} stmts'
 
     tag = style['tag']
+    marks = [_mark_of(opts, s['id']) for s in stmts]
+    if opts.marking and all(m == 'pruned' for m in marks):
+        tag = f'{tag} · PRUNED' if tag else 'PRUNED'
     band_bits = [f'<b>{head}</b>']
     if line_txt:
         band_bits.append(line_txt)
@@ -536,14 +563,19 @@ def _block_label(model: CFGModel, block: Block, opts: RenderOptions,
         line_cell = f'L{line}' if line and line >= 0 else ''
         # For a single statement the id is already in the header band.
         id_cell = _id_suffix(stmt['id']) if len(stmts) > 1 else ''
+        mark = _mark_of(opts, stmt['id'])
+        mark_style = MARK_STYLE.get(mark, {})
+        row_bg = f' bgcolor="{mark_style["row"]}"' if mark else ''
+        text_colour = f' color="{mark_style["text"]}"' if mark_style.get('text') else ''
         rows.append(
             '<tr>'
-            f'<td align="right" valign="top" port="p_{stmt["id"]}">'
+            f'<td align="right" valign="top" port="p_{stmt["id"]}"{row_bg}>'
             f'<font point-size="8" color="#78909c" face="{MONO}">{_esc(id_cell)}</font></td>'
-            f'<td align="right" valign="top">'
+            f'<td align="right" valign="top"{row_bg}>'
             f'<font point-size="8" color="#b0bec5" face="{MONO}">{_esc(line_cell)}</font></td>'
-            f'<td align="left" valign="top">'
-            f'<font point-size="10" face="{MONO}">{_wrap_cell(model.stmt_text(stmt), opts.wrap)}</font></td>'
+            f'<td align="left" valign="top"{row_bg}>'
+            f'<font point-size="10" face="{MONO}"{text_colour}>'
+            f'{_wrap_cell(model.stmt_text(stmt), opts.wrap, strike=mark == "pruned")}</font></td>'
             '</tr>'
         )
 
@@ -640,11 +672,26 @@ def _legend_label(model: CFGModel, opts: RenderOptions) -> str:
             f'<font point-size="9" face="{SANS}"> {style["tag"].lower()}</font></td>'
         )
 
+    mark_cells = []
+    if opts.marking:
+        present_marks = set(opts.marking.values())
+        for mark, style in MARK_STYLE.items():
+            if mark not in present_marks:
+                continue
+            sample = '<s>stmt</s>' if mark == 'pruned' else 'stmt'
+            mark_cells.append(
+                f'<td align="left" bgcolor="{style["row"]}">'
+                f'<font point-size="9" face="{MONO}" color="{style["text"] or "#000000"}">{sample}</font></td>'
+                f'<td align="left"><font point-size="9" face="{SANS}"> {_esc(style["legend"])}</font></td>'
+            )
+
     rows = []
     if edge_cells:
         rows.append('<tr>' + '<td>&nbsp;</td>'.join(edge_cells) + '</tr>')
     if role_cells:
         rows.append('<tr>' + '<td>&nbsp;</td>'.join(role_cells) + '</tr>')
+    if mark_cells:
+        rows.append('<tr>' + '<td>&nbsp;</td>'.join(mark_cells) + '</tr>')
     return ''.join(rows)
 
 
@@ -924,6 +971,14 @@ def build_dot(cfg: Dict[str, Any], opts: RenderOptions) -> str:
         if edge_type in ('CALL', 'RETURN', 'CALLBACK', 'EXCEPTIONAL_RETURN'):
             attrs['penwidth'] = 1.6
             attrs['arrowhead'] = 'vee'
+        # A branch side SWAT prunes (or prunes depending on the call stack): this edge is where
+        # DFS makes that decision, so it carries the marking of the node it leads to.
+        target_mark = _mark_of(opts, dst_id) if edge_type in BRANCH_EDGES else None
+        if target_mark:
+            mark_style = MARK_STYLE[target_mark]
+            attrs['color'] = attrs['fontcolor'] = mark_style['edge']
+            attrs['style'] = 'dashed'
+            attrs['label'] = f' {label} · {mark_style["label"]} ' if label else f' {mark_style["label"]} '
         lines.append(f'  {tail} -> {head} [' + _attrs(attrs) + '];')
 
     for stub_id, name in sorted(stub_nodes.items()):

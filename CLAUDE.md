@@ -21,6 +21,18 @@ java -ea -jar build/libs/cfg-extractor-1.0-SNAPSHOT-all.jar <classes-dir> <out-d
   load every graph. Compare two sweeps with `--compare base.jsonl new.jsonl`. Keep a copy of the
   old jar before changing anything, so you have a baseline.
 
+## Visualization
+
+Run the visualizer with its own venv, not the system Python, which lacks networkx and matplotlib:
+
+```bash
+visualize/.venv/bin/python visualize/visualize_cfg.py <graph.json> [out.svg] [--swat-marking]
+```
+
+- `--swat-marking` shows what SWAT's static pre-analysis prunes. It is computed with SWAT's own
+  `SAGraph`, found at `../SWAT/symbolic-explorer`; override that with `--swat-explorer`.
+- The graphviz backend also needs the `dot` binary.
+
 ## The one invariant that matters
 
 SWAT walks this graph **in lockstep** with the execution tree, pairing branch for branch **by

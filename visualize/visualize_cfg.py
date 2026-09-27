@@ -23,6 +23,8 @@ Requirements:
     graphviz (the `dot` binary); networkx + matplotlib for the fallback backend
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import argparse
@@ -33,6 +35,7 @@ import textwrap
 # Allow running the script from anywhere (`python /path/to/visualize_cfg.py`).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graphviz_render as gv
+import swat_marking
 
 try:
     import networkx as nx
@@ -598,6 +601,13 @@ def _render_with_graphviz(cfg_data, json_path: Path, output_path: Path,
     if not gv.dot_available():
         return False
 
+    marking = None
+    if args.swat_marking:
+        marking = swat_marking.compute_marking(json_path, args.swat_explorer)
+        counts = {m: sum(1 for v in marking.values() if v == m)
+                  for m in (swat_marking.INTERESTING, swat_marking.CONTEXT, swat_marking.PRUNED)}
+        print('  SWAT marking: ' + ', '.join(f'{n} {m}' for m, n in counts.items()))
+
     opts = gv.RenderOptions(
         collapse=not args.no_collapse,
         shorten=not args.full_names,
@@ -608,6 +618,7 @@ def _render_with_graphviz(cfg_data, json_path: Path, output_path: Path,
         layout=args.layout,
         annotate_calls=not args.no_call_refs,
         clone_threshold=args.clone_threshold,
+        marking=marking,
     )
 
     formats = [f.strip() for f in args.formats.split(',') if f.strip()]
@@ -715,6 +726,9 @@ Examples:
 
   # Also write the Graphviz source
   python visualize_cfg.py output/Main_main.json --dot
+
+  # Show which statements SWAT's static pre-analysis prunes
+  python visualize_cfg.py Main_main_interprocedural.json --swat-marking
         """)
 
     parser.add_argument('input', type=Path,
@@ -763,6 +777,14 @@ Examples:
     group.add_argument('--callgraph', action='store_true', default=True,
                        help='Also write a method-level call graph overview '
                             '(interprocedural CFGs, default: on)')
+    group.add_argument('--swat-marking', action='store_true',
+                       help="Mark what SWAT's static pre-analysis prunes: struck-through "
+                            'statements are uninteresting under every call stack, amber '
+                            'ones only under some; branch edges into them are recoloured. '
+                            "Computed with SWAT's own SAGraph")
+    group.add_argument('--swat-explorer', type=Path, default=None, metavar='DIR',
+                       help='SWAT symbolic-explorer directory for --swat-marking '
+                            f'(default: {swat_marking.DEFAULT_EXPLORER})')
     group.add_argument('--no-callgraph', dest='callgraph', action='store_false',
                        help='Skip the call graph overview')
     return parser
