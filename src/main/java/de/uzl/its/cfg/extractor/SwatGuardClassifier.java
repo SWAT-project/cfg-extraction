@@ -31,6 +31,13 @@ import java.util.List;
  * via {@code SymbolicTraceHandler.checkAndSetBranch(safe, constraint, iid)}. The safe condition is
  * the <em>true</em> direction, so the exception continuation is always the false branch.
  *
+ * <p>For an array SWAT does not track symbolically (e.g. one returned by an uninstrumented library
+ * call such as {@code LinkedList.toArray()}), there is no {@code checkIndex} to evaluate. The
+ * visitor then records the bounds check as a <em>concrete-only</em> branch instead
+ * ({@code SymbolicTraceHandler.addConcreteBranch}), taken iff the access completed normally, so
+ * the guard is in the trace for every array access, tracked or not. That is the contract this
+ * classifier relies on: which arrays are tracked is only known at run time.
+ *
  * <p>The guard set deliberately does <em>not</em> come from SootUp's exception inference
  * ({@link SafeStmtExceptionAnalyzer}), because the two disagree in both directions:
  *
@@ -56,7 +63,10 @@ public final class SwatGuardClassifier {
 
     /** A risky operation SWAT guards, and the exception its false branch leads to. */
     public enum GuardKind {
-        /** Any array load or store; SWAT guards all 16 {@code ?ALOAD}/{@code ?ASTORE} opcodes. */
+        /**
+         * Any array load or store; SWAT records a guard branch for all 16 {@code ?ALOAD}/{@code ?ASTORE}
+         * opcodes, symbolic for tracked arrays and concrete-only for untracked ones.
+         */
         ARRAY_BOUNDS("java.lang.ArrayIndexOutOfBoundsException"),
         /** {@code NEWARRAY}, {@code ANEWARRAY} and each dimension of {@code MULTIANEWARRAY}. */
         ARRAY_SIZE("java.lang.NegativeArraySizeException"),
