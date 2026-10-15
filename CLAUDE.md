@@ -57,6 +57,11 @@ Where the graph cannot describe what runs, mark the node incomplete with `markIn
 flags the node itself and also reports it as an assertion point, so SWAT stops trusting the graph
 beyond the node but still treats the paths leading to it as interesting.
 
+Assertion points (`new java.lang.AssertionError`) are only the first kind of target, chosen
+because they are easy to test. Later targets include shell calls, SQL statement building and
+uncaught exceptions, so keep target detection separate from the graph construction and avoid
+designs that only work for `AssertionError`.
+
 ## SootUp traps
 
 - **No body interceptors.** The view is built with `List.of()` on purpose. Interceptors reshape
