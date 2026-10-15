@@ -9,6 +9,7 @@ import sootup.core.jimple.common.constant.NullConstant;
 import sootup.core.jimple.common.expr.AbstractInstanceInvokeExpr;
 import sootup.core.jimple.common.expr.AbstractInvokeExpr;
 import sootup.core.jimple.common.expr.JCastExpr;
+import sootup.core.jimple.common.expr.JDynamicInvokeExpr;
 import sootup.core.jimple.common.expr.JNewExpr;
 import sootup.core.jimple.common.expr.JSpecialInvokeExpr;
 import sootup.core.jimple.common.expr.JStaticInvokeExpr;
@@ -287,6 +288,11 @@ public class ReceiverTypeResolver {
             precision = isApplicationType(declaredType)
                     ? Precision.EXACT
                     : Precision.LIBRARY_OVERRIDES_UNLISTED;
+            if (mayBeLambda(declaredType)) {
+                // A lambda or method reference implementing this interface has no class in the
+                // view, so its body -- application code -- is missing from the candidates.
+                precision = Precision.NONE;
+            }
         }
 
         MethodSubSignature subSignature = declared.getSubSignature();
@@ -359,6 +365,37 @@ public class ReceiverTypeResolver {
                     concreteApplicationTypes.size());
         }
         return concreteApplicationTypes;
+    }
+
+    /** The interfaces the program's lambdas and method references implement. */
+    private Set<ClassType> lambdaInterfaces;
+
+    /**
+     * Whether a receiver of static type {@code type} may be a lambda or method reference: an
+     * object whose class is generated at run time (by {@code LambdaMetafactory}), so it is in no
+     * subtype enumeration. That is the case if {@code type} is an interface that one of the
+     * program's {@code invokedynamic} lambda sites produces, or a supertype of one.
+     */
+    private boolean mayBeLambda(ClassType type) {
+        if (lambdaInterfaces == null) {
+            lambdaInterfaces = new HashSet<>();
+            view.getClasses().filter(SootClass::isApplicationClass)
+                    .flatMap(sootClass -> sootClass.getMethods().stream())
+                    .filter(SootMethod::hasBody)
+                    .flatMap(method -> method.getBody().getControlFlowGraph().getStmts().stream())
+                    .flatMap(stmt -> stmt.getUses().stream())
+                    .filter(value -> value instanceof JDynamicInvokeExpr)
+                    .map(value -> (JDynamicInvokeExpr) value)
+                    .filter(indy -> indy.getBootstrapMethodSignature().getDeclClassType()
+                            .getFullyQualifiedName().equals("java.lang.invoke.LambdaMetafactory"))
+                    .map(indy -> indy.getMethodSignature().getType())
+                    .filter(produced -> produced instanceof ClassType)
+                    .forEach(produced -> lambdaInterfaces.add((ClassType) produced));
+            logger.debug("Lambda interfaces: {}", lambdaInterfaces);
+        }
+        boolean isInterface = view.getClass(type).map(SootClass::isInterface).orElse(true);
+        return isInterface && lambdaInterfaces.stream()
+                .anyMatch(lambda -> lambda.equals(type) || isSubtypeOf(lambda, type));
     }
 
     private boolean isInstantiable(ClassType type) {
