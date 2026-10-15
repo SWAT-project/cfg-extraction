@@ -48,6 +48,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final List<ExpandedCall> expandedCalls;
     private final List<String> assertionPointIds;
     private final Set<String> methodPrefixBlacklist;
+    private ClinitTargets clinitTargets;
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.receiverTypeResolver = new ReceiverTypeResolver(view);
@@ -89,6 +90,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 method.getSignature().toString(),
                 method.getDeclaringClassType().getClassName(),
                 ControlFlowGraph.AnalysisType.INTER_PROCEDURAL);
+
+        clinitTargets = new ClinitTargets(view, method.getDeclaringClassType());
 
         // Extract CFG recursively starting from entry point. There is no depth limit: every method
         // is expanded once however many call sites reach it (processedMethods), so construction is
@@ -159,6 +162,17 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         if (methodAssertionPointIds != null) {
             var newIds = methodAssertionPointIds.stream().map(oldToNewId::get).collect(Collectors.toList());
             this.assertionPointIds.addAll(newIds);
+        }
+
+        // Statements that may run a static initializer that can reach an assert. Static
+        // initializers are not in the graph (SWAT masks them in its walk), so without this the
+        // paths to such a statement would be pruned.
+        for (Stmt stmt : method.getBody().getControlFlowGraph().getStmts()) {
+            if (clinitTargets.triggersTarget(stmt)) {
+                String nodeId = oldToNewId.get(nodeIdsByStmt.get(stmt));
+                logger.info("'{}' in {} may run a static initializer that reaches an assert", stmt, methodSig);
+                this.assertionPointIds.add(nodeId);
+            }
         }
 
         // Track entry and exit nodes for this method
@@ -416,7 +430,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
      * at run time: {@code Method.invoke}, {@code Constructor.newInstance}, {@code
      * Class.newInstance} and the {@code MethodHandle.invoke*} methods.
      */
-    private static boolean isReflectiveCall(AbstractInvokeExpr invoke) {
+    static boolean isReflectiveCall(AbstractInvokeExpr invoke) {
         MethodSignature sig = invoke.getMethodSignature();
         String owner = sig.getDeclClassType().getFullyQualifiedName();
         String name = sig.getName();
