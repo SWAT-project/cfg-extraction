@@ -428,7 +428,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     /**
      * Whether {@code invoke} calls one of the JDK's reflective entry points, which run code chosen
      * at run time: {@code Method.invoke}, {@code Constructor.newInstance}, {@code
-     * Class.newInstance} and the {@code MethodHandle.invoke*} methods.
+     * Class.newInstance}, {@code Class.forName} (a static initializer) and the {@code
+     * MethodHandle.invoke*} methods.
      */
     static boolean isReflectiveCall(AbstractInvokeExpr invoke) {
         MethodSignature sig = invoke.getMethodSignature();
@@ -438,8 +439,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             case "java.lang.reflect.Method":
                 return name.equals("invoke");
             case "java.lang.reflect.Constructor":
-            case "java.lang.Class":
                 return name.equals("newInstance");
+            case "java.lang.Class":
+                // forName also runs the static initializer of the class it loads
+                return name.equals("newInstance") || name.equals("forName");
             case "java.lang.invoke.MethodHandle":
                 return name.startsWith("invoke");
             default:

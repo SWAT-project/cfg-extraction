@@ -152,20 +152,26 @@ final class ClinitTargets {
 
     /**
      * Every application method a call naming {@code sig} may run: the declaration it resolves to
-     * in the named class or its superclasses, and every override in an application subtype.
+     * in the named class or its superclasses, and every override in an application subtype -- also
+     * when the named class is a library class (an application subclass of java.io.PrintWriter).
      */
     private Set<SootMethod> possibleCallees(MethodSignature sig) {
         ClassType declared = sig.getDeclClassType();
-        if (!isApplicationClass(declared)) {
-            return Set.of();
-        }
         Set<SootMethod> callees = new LinkedHashSet<>();
-        Stream.concat(Stream.of(declared), Stream.concat(supertypes(declared), hierarchy.subtypesOf(declared)))
+        Stream.concat(Stream.of(declared), Stream.concat(supertypes(declared), subtypes(declared)))
                 .filter(this::isApplicationClass)
                 .forEach(t -> view.getClass(t)
                         .flatMap(c -> c.getMethod(sig.getSubSignature()))
                         .ifPresent(callees::add));
         return callees;
+    }
+
+    private Stream<ClassType> subtypes(ClassType type) {
+        try {
+            return hierarchy.subtypesOf(type).collect(Collectors.toList()).stream();
+        } catch (RuntimeException e) {
+            return Stream.empty(); // a type the hierarchy does not know has no subtypes we analyse
+        }
     }
 
     private Stream<ClassType> supertypes(ClassType type) {
