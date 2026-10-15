@@ -210,6 +210,15 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             assert callSiteId != null
                     : "Failed to find CFG node for call site statement: " + stmt + " in method: " + methodSig;
 
+            if (isReflectiveCall(getInvokeExpr(stmt).get())) {
+                // Reflection can run any application method, and the JDK code in between is not
+                // in the graph, so nothing here says which. Without the flag, an assert in the
+                // invoked method would be unreachable and every path to this call pruned.
+                logger.info("Reflective call '{}' in {}: marking call site as incomplete", stmt, methodSig);
+                markIncomplete(combinedCFG, callSiteId);
+                continue;
+            }
+
             ReceiverTypeResolver.Dispatch dispatch = receiverTypeResolver.resolve(method, stmt);
             Optional<MethodSignature> calleeSigOpt = dispatch.getInlinableTarget();
 
@@ -400,6 +409,28 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         }
         return dispatch.getTargets().stream()
                 .anyMatch(target -> !isBlacklisted(target) && isApplicationMethod(target));
+    }
+
+    /**
+     * Whether {@code invoke} calls one of the JDK's reflective entry points, which run code chosen
+     * at run time: {@code Method.invoke}, {@code Constructor.newInstance}, {@code
+     * Class.newInstance} and the {@code MethodHandle.invoke*} methods.
+     */
+    private static boolean isReflectiveCall(AbstractInvokeExpr invoke) {
+        MethodSignature sig = invoke.getMethodSignature();
+        String owner = sig.getDeclClassType().getFullyQualifiedName();
+        String name = sig.getName();
+        switch (owner) {
+            case "java.lang.reflect.Method":
+                return name.equals("invoke");
+            case "java.lang.reflect.Constructor":
+            case "java.lang.Class":
+                return name.equals("newInstance");
+            case "java.lang.invoke.MethodHandle":
+                return name.startsWith("invoke");
+            default:
+                return false;
+        }
     }
 
     private boolean isApplicationMethod(MethodSignature methodSig) {
