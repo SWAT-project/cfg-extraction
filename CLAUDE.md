@@ -62,6 +62,12 @@ because they are easy to test. Later targets include shell calls, SQL statement 
 uncaught exceptions, so keep target detection separate from the graph construction and avoid
 designs that only work for `AssertionError`.
 
+Exceptions without a phantom guard (casts, null dereferences across frames, exceptions thrown by
+library calls) have no reliable EXCEPTION edge or escape, which can give false SAFE verdicts in
+SWAT. This is deferred to a planned redesign in which SWAT records handler entry, calls and
+returns in the trace and pairs trace events with graph nodes by id; see "Planned redesign" in
+`../CLAUDE.md`. Until then, don't patch it piecemeal; only fix obvious local bugs.
+
 ## SootUp traps
 
 - **No body interceptors.** The view is built with `List.of()` on purpose. Interceptors reshape
