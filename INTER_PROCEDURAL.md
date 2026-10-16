@@ -259,8 +259,14 @@ method. See the visualization section of README.md for all options.
    cannot say; the executor reports it in the trace (`UNMODELLED_EXCEPTION`), and SWAT stops
    trusting the graph for the rest of that path. Pseudo types are only emitted if some handler in
    the program could catch them
-   - Remaining cost: pruning is lost after an actual unmodelled exception on a path
-   - Solution: report handler entries in the trace and resume the walk at the handler
+   - The executor also records every handler entry (`HANDLER_ENTRY`, with the frame depth
+     relative to the last branch and a key), and SWAT resumes the walk at the handler entry node
+     with the same `handlerKey`: `<owner>.<name><desc>|<sorted caught types>|<sorted protected
+     source lines>` (`Throwable` for catch-any). SootUp has no bytecode offsets or trap order,
+     hence a content key; keys that are not unique in their method (`finally` copies) are left
+     out, and SWAT keeps giving up there
+   - Remaining cost: pruning is lost after `finally` copies and handlers in a method entered
+     after the last branch
 
 3. **Nested try blocks**: of two handlers catching `T`, the one with the more specific type is
    chosen. An inner `catch (Exception e)` really shadows an outer `catch (RuntimeException e)`,
