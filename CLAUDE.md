@@ -62,11 +62,12 @@ because they are easy to test. Later targets include shell calls, SQL statement 
 uncaught exceptions, so keep target detection separate from the graph construction and avoid
 designs that only work for `AssertionError`.
 
-Exceptions without a phantom guard (casts, null dereferences across frames, exceptions thrown by
-library calls) have no reliable EXCEPTION edge or escape, which can give false SAFE verdicts in
-SWAT. This is deferred to a planned redesign in which SWAT records handler entry, calls and
-returns in the trace and pairs trace events with graph nodes by id; see "Planned redesign" in
-`../CLAUDE.md`. Until then, don't patch it piecemeal; only fix obvious local bugs.
+Exceptions without a phantom guard (casts, null dereferences, exceptions thrown by library calls,
+Errors) are modelled as pseudo exception types (`PseudoExceptions`, see `INTER_PROCEDURAL.md`):
+extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. The walk never
+follows them; after such an exception SWAT gives up on the path, from a trace event the executor
+emits. A later step may resume the walk at the handler instead (see "Planned redesign" in
+`../CLAUDE.md`).
 
 ## SootUp traps
 

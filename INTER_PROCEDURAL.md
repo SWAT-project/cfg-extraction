@@ -248,11 +248,19 @@ method. See the visualization section of README.md for all options.
    - Solution: propagate types through fields and across call sites (a points-to analysis)
 
 2. **Unmodelled exceptions**: exceptions SWAT does not guard -- a `NullPointerException`, a
-   `ClassCastException`, anything thrown inside library code -- reach a handler without the walk
-   noticing. It keeps following the normal successor while the execution is in the handler, so
-   the two drift apart. The graph has EXCEPTION edges for the local cases, but following them
-   would need the walk to track alternatives, and the unguarded escapes have no edges at all
-   - Solution: a walk over sets of positions, or incomplete markers on such statements
+   `ClassCastException`, anything thrown inside library code, Errors -- have no precise type or
+   destination in the graph. They are modelled as pseudo exception types (`PseudoExceptions`):
+   every statement that may throw one (calls, instance field and array accesses, casts, array
+   lengths, monitors, throws; any statement for Errors) gets EXCEPTION edges to every local
+   handler that might catch it and to an `uncaught[?Exception]` / `uncaught[?Error]` node, and
+   each CALL edge lists its handlers that might catch each pseudo type (`unknownHandlers`). SWAT's
+   summaries treat a pseudo escape as caught by any listed handler, or by none. So the paths into
+   such handlers stay interesting. Where the execution goes after such an exception the graph
+   cannot say; the executor reports it in the trace (`UNMODELLED_EXCEPTION`), and SWAT stops
+   trusting the graph for the rest of that path. Pseudo types are only emitted if some handler in
+   the program could catch them
+   - Remaining cost: pruning is lost after an actual unmodelled exception on a path
+   - Solution: report handler entries in the trace and resume the walk at the handler
 
 3. **Nested try blocks**: of two handlers catching `T`, the one with the more specific type is
    chosen. An inner `catch (Exception e)` really shadows an outer `catch (RuntimeException e)`,
