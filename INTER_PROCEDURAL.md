@@ -61,6 +61,8 @@ Each call site ends up in one of these states:
 | Exactly one target, provably | added (also for repeat and recursive calls) | no |
 | Several possible targets | none | yes, if an application method is among them |
 | Nothing established (e.g. `invokedynamic`) | none | yes |
+| Receiver untraceable, and a lambda in the program implements its interface | none | yes -- lambda classes are not in the view |
+| Reflective call (`Method.invoke`, `newInstance`, `Class.forName`, `MethodHandle.invoke*`) | none | yes |
 | Only library or blacklisted targets | none | no -- never inlined, so nothing is missing |
 
 Ambiguous call sites get no CALL edge on purpose. SWAT walks this graph in lockstep with real
@@ -256,11 +258,14 @@ method. See the visualization section of README.md for all options.
    chosen. An inner `catch (Exception e)` really shadows an outer `catch (RuntimeException e)`,
    but SootUp's handler map has lost the order
 
-4. **Static Initializers**: `<clinit>` is never entered, so an assertion inside one is invisible.
-   This is consistent with the consumer rather than a hole: SWAT masks `<clinit>` subtrees out of
-   the lockstep walk entirely (`DFS.py`, `mask_sa_node`), because the graph does not model them,
-   and treats everything inside as interesting
-   - Solution (for precision, not soundness): add implicit call edges where a class is first used
+4. **Static Initializers**: `<clinit>` is never entered, so its body is not in the graph. SWAT
+   masks `<clinit>` subtrees out of the lockstep walk entirely (`DFS.py`, `mask_sa_node`) and
+   treats everything inside as interesting. What must not be pruned is the path to the statement
+   that first uses the class, so `ClinitTargets` marks every statement that may initialize a class
+   whose initializer can reach an assert (`new`, static calls, static field accesses, also through
+   superclasses; transitively through calls and other initializers) as an assertion point. Which
+   use comes first is only known at run time, so every such use counts
+   - Solution (for precision): add implicit call edges where a class is first used
 
 5. **Ambiguous Calls**: Several possible targets means no CALL edge at all, so the callee bodies
    are missing from the graph even though one of them runs
