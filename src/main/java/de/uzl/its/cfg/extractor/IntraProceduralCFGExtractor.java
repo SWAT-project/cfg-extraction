@@ -216,6 +216,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         logger.info("Extracted CFG with {} nodes and {} edges",
                 cfg.getNodes().size(), cfg.getEdges().size());
 
+        annotateHandlerKeys(method, stmtGraph, stmts, entryIds, cfg);
+
         return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap(), escapes.pseudoMap());
     }
 
@@ -281,6 +283,76 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         String stmtType = stmt.getClass().getSimpleName();
 
         return new CFGNode(nodeId, stmtString, stmtType, PhantomGuardEmitter.lineNumberOf(stmt));
+    }
+
+    /**
+     * Names each catch handler the way SWAT's executor reports its entry (SWAT's {@code
+     * HandlerKeys}): "owner.name(desc)|caught types|protected lines", the caught types sorted
+     * (Throwable for a catch-any handler), the protected lines being the source lines of the
+     * statements the handler covers, sorted. SootUp keeps no bytecode offsets and no exception
+     * table order, so the content is the only name both sides can compute. A key that is not unique
+     * in the method (javac's copies of a finally block) is left out, so that the walk gives up there
+     * instead of resuming at the wrong copy.
+     */
+    private static void annotateHandlerKeys(SootMethod method, sootup.core.graph.ControlFlowGraph<?> stmtGraph,
+            java.util.Collection<Stmt> stmts, Map<Stmt, String> entryIds, ControlFlowGraph cfg) {
+        Map<Stmt, java.util.TreeSet<String>> types = new java.util.LinkedHashMap<>();
+        Map<Stmt, java.util.TreeSet<Integer>> lines = new java.util.HashMap<>();
+        for (Stmt stmt : stmts) {
+            int line = stmt.getPositionInfo().getStmtPosition().getFirstLine();
+            for (Map.Entry<ClassType, Stmt> handler : stmtGraph.exceptionalSuccessors(stmt).entrySet()) {
+                types.computeIfAbsent(handler.getValue(), h -> new java.util.TreeSet<>())
+                        .add(handler.getKey().getFullyQualifiedName());
+                java.util.TreeSet<Integer> protectedLines = lines.computeIfAbsent(handler.getValue(), h -> new java.util.TreeSet<>());
+                if (line > 0) {
+                    protectedLines.add(line);
+                }
+            }
+        }
+        String methodKey = method.getDeclaringClassType().getFullyQualifiedName().replace('.', '/') + "."
+                + method.getName() + jvmDescriptor(method);
+        Map<String, Integer> counts = new java.util.HashMap<>();
+        Map<Stmt, String> keys = new java.util.LinkedHashMap<>();
+        for (Stmt handler : types.keySet()) {
+            String key = methodKey + "|" + String.join(",", types.get(handler)) + "|"
+                    + lines.get(handler).stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+            keys.put(handler, key);
+            counts.merge(key, 1, Integer::sum);
+        }
+        keys.forEach((handler, key) -> {
+            if (counts.get(key) == 1) {
+                cfg.getNode(entryIds.get(handler)).ifPresent(node -> node.setHandlerKey(key));
+            }
+        });
+    }
+
+    private static String jvmDescriptor(SootMethod method) {
+        StringBuilder d = new StringBuilder("(");
+        for (sootup.core.types.Type p : method.getParameterTypes()) {
+            d.append(jvmDescriptor(p));
+        }
+        return d.append(")").append(jvmDescriptor(method.getReturnType())).toString();
+    }
+
+    private static String jvmDescriptor(sootup.core.types.Type t) {
+        if (t instanceof sootup.core.types.ArrayType a) {
+            return "[".repeat(a.getDimension()) + jvmDescriptor(a.getBaseType());
+        }
+        if (t instanceof ClassType c) {
+            return "L" + c.getFullyQualifiedName().replace('.', '/') + ";";
+        }
+        return switch (t.toString()) {
+            case "int" -> "I";
+            case "boolean" -> "Z";
+            case "byte" -> "B";
+            case "char" -> "C";
+            case "short" -> "S";
+            case "long" -> "J";
+            case "float" -> "F";
+            case "double" -> "D";
+            case "void" -> "V";
+            default -> throw new IllegalArgumentException("Unknown type " + t);
+        };
     }
 
     /**

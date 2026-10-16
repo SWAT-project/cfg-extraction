@@ -44,6 +44,21 @@ public class CFGNode {
     private String exceptionType;
     private List<String> exceptionTypeChain;
 
+    /**
+     * For the entry node of a catch handler only: the handler's name as SWAT's executor reports it
+     * when the handler is entered, "owner.name(desc)|caught types|protected lines" (see
+     * {@code HandlerKeys} in SWAT). Absent if the key is not unique in its method.
+     */
+    private String handlerKey;
+
+    public String getHandlerKey() {
+        return handlerKey;
+    }
+
+    public void setHandlerKey(String handlerKey) {
+        this.handlerKey = handlerKey;
+    }
+
     public CFGNode(String id, String statement, String stmtType, int lineNumber) {
         this.id = id;
         this.statement = statement;
