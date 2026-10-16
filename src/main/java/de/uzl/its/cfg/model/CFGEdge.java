@@ -1,5 +1,6 @@
 package de.uzl.its.cfg.model;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -34,6 +35,13 @@ public class CFGEdge {
      * {@link CFGNode#getExceptionTypeChain()}).
      */
     private Map<String, String> handlers;
+
+    /**
+     * For a CALL edge only: for each pseudo exception type (an exception whose type the graph does
+     * not know, e.g. "?Exception"), the handlers at this call site that might catch it. Absent if
+     * there are none.
+     */
+    private Map<String, List<String>> unknownHandlers;
 
     public enum EdgeType {
         NORMAL,           // Regular control flow
@@ -95,6 +103,14 @@ public class CFGEdge {
 
     public Map<String, String> getHandlers() {
         return handlers;
+    }
+
+    public void setUnknownHandlers(Map<String, List<String>> unknownHandlers) {
+        this.unknownHandlers = unknownHandlers;
+    }
+
+    public Map<String, List<String>> getUnknownHandlers() {
+        return unknownHandlers;
     }
 
     public void setCallContinuations(String returnSite, Map<String, String> handlers) {

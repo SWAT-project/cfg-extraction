@@ -44,6 +44,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final Map<MethodSignature, Set<String>> methodExitNodes;
     /** The {@code uncaught[T]} node of each exception type that can leave each method. */
     private final Map<MethodSignature, Map<ClassType, String>> methodEscapeNodes;
+    /** Per method: the uncaught[?...] node of each pseudo exception type leaving it. */
+    private final Map<MethodSignature, Map<String, String>> methodPseudoEscapeNodes = new HashMap<>();
+    private PseudoExceptions pseudo;
     /** Every expanded call site, for wiring EXCEPTIONAL_RETURN edges once all methods are in. */
     private final List<ExpandedCall> expandedCalls;
     private final List<String> assertionPointIds;
@@ -92,6 +95,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 ControlFlowGraph.AnalysisType.INTER_PROCEDURAL);
 
         clinitTargets = new ClinitTargets(view, method.getDeclaringClassType());
+        pseudo = PseudoExceptions.forProgram(view);
+        intraExtractor.setPseudoExceptions(pseudo);
+        logger.info("Exceptions of unknown type modelled: {}", pseudo.enabled());
 
         // Extract CFG recursively starting from entry point. There is no depth limit: every method
         // is expanded once however many call sites reach it (processedMethods), so construction is
@@ -197,6 +203,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         Map<ClassType, String> newEscapeIds = new LinkedHashMap<>();
         extraction.escapes().forEach((type, id) -> newEscapeIds.put(type, oldToNewId.get(id)));
         methodEscapeNodes.put(methodSig, newEscapeIds);
+        Map<String, String> newPseudoEscapeIds = new LinkedHashMap<>();
+        extraction.pseudoEscapes().forEach((kind, id) -> newPseudoEscapeIds.put(kind, oldToNewId.get(id)));
+        methodPseudoEscapeNodes.put(methodSig, newPseudoEscapeIds);
 
         // Merge edges (intra-procedural)
         for (CFGEdge edge : methodCFG.getEdges()) {
@@ -311,6 +320,21 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                     CFGEdge.EdgeType.CALL,
                     callee.getName());
             callEdge.setCallContinuations(returnSiteId, handlerNames);
+            Map<String, List<String>> unknownHandlers = new LinkedHashMap<>();
+            for (String kind : pseudo.enabled()) {
+                List<String> catching = new ArrayList<>();
+                handlers.forEach((type, id) -> {
+                    if (pseudo.catches(type, kind) && !catching.contains(id)) {
+                        catching.add(id);
+                    }
+                });
+                if (!catching.isEmpty()) {
+                    unknownHandlers.put(kind, catching);
+                }
+            }
+            if (!unknownHandlers.isEmpty()) {
+                callEdge.setUnknownHandlers(unknownHandlers);
+            }
             combinedCFG.addEdge(callEdge);
             // Remove normal/fallthrough edge
             combinedCFG.removeEdges(
@@ -372,6 +396,37 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                             CFGEdge.EdgeType.EXCEPTIONAL_RETURN, "unwind"));
                 }
             }
+        }
+        for (Map.Entry<MethodSignature, Map<String, String>> method : methodPseudoEscapeNodes.entrySet()) {
+            for (Map.Entry<String, String> escape : method.getValue().entrySet()) {
+                Set<String> targets = new LinkedHashSet<>();
+                collectPseudoHandlers(method.getKey(), escape.getKey(), callsTo, new HashSet<>(), targets);
+                for (String target : targets) {
+                    combinedCFG.addEdge(new CFGEdge(escape.getValue(), target,
+                            CFGEdge.EdgeType.EXCEPTIONAL_RETURN, "unwind"));
+                }
+            }
+        }
+    }
+
+    /**
+     * Every handler an exception of pseudo type {@code kind} leaving {@code method} might end up
+     * in: at each call site into it, every handler that might catch it -- and, since none of them
+     * is sure to, also those of the call sites further up.
+     */
+    private void collectPseudoHandlers(MethodSignature method, String kind,
+            Map<MethodSignature, List<ExpandedCall>> callsTo, Set<MethodSignature> visited,
+            Set<String> targets) {
+        if (!visited.add(method)) {
+            return;
+        }
+        for (ExpandedCall call : callsTo.getOrDefault(method, List.of())) {
+            call.handlers().forEach((type, id) -> {
+                if (pseudo.catches(type, kind)) {
+                    targets.add(id);
+                }
+            });
+            collectPseudoHandlers(call.caller(), kind, callsTo, visited, targets);
         }
     }
 

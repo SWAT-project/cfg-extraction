@@ -45,7 +45,14 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
      *                 method, whether raised by a phantom guard or by an explicit {@code throw}
      */
     public record MethodCFG(ControlFlowGraph cfg, Map<Stmt, String> nodeIds, Map<Stmt, String> entryIds,
-            Map<ClassType, String> escapes) {
+            Map<ClassType, String> escapes, Map<String, String> pseudoEscapes) {
+    }
+
+    /** Which exceptions of unknown type to model (see {@link PseudoExceptions}); null for none. */
+    private PseudoExceptions pseudo;
+
+    void setPseudoExceptions(PseudoExceptions pseudo) {
+        this.pseudo = pseudo;
     }
 
     /** Traces thrown values to their type; shared so that its caches outlive a single method. */
@@ -75,7 +82,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // Check if method has a body (not abstract/native)
         if (!method.hasBody()) {
             logger.warn("Method {} has no body (abstract or native)", methodSig);
-            return new MethodCFG(cfg, Map.of(), Map.of(), Map.of());
+            return new MethodCFG(cfg, Map.of(), Map.of(), Map.of(), Map.of());
         }
 
         Body body = method.getBody();
@@ -133,6 +140,18 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
             for (Map.Entry<ClassType, Stmt> handler : stmtGraph.exceptionalSuccessors(stmt).entrySet()) {
                 if (mightReachHandler(handler.getKey(), possibleExceptions, hierarchy)) {
                     reachableHandlers.add(handler.getValue());
+                }
+            }
+            // Exceptions of unknown type (a null dereference, a cast, a library call, an Error): to
+            // every handler that might catch them, and out of the method.
+            if (pseudo != null) {
+                for (String kind : pseudo.kindsOf(stmt)) {
+                    for (Map.Entry<ClassType, Stmt> handler : stmtGraph.exceptionalSuccessors(stmt).entrySet()) {
+                        if (pseudo.catches(handler.getKey(), kind)) {
+                            reachableHandlers.add(handler.getValue());
+                        }
+                    }
+                    cfg.addEdge(new CFGEdge(sourceId, escapes.pseudoNodeFor(kind), CFGEdge.EdgeType.EXCEPTION));
                 }
             }
             for (Stmt handler : reachableHandlers) {
@@ -197,7 +216,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         logger.info("Extracted CFG with {} nodes and {} edges",
                 cfg.getNodes().size(), cfg.getEdges().size());
 
-        return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap());
+        return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap(), escapes.pseudoMap());
     }
 
     /**

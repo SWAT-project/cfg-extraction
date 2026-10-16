@@ -7,6 +7,7 @@ import sootup.core.types.ClassType;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -47,5 +48,26 @@ public final class EscapeNodes {
     /** Every exception type leaving the method, with the node it leaves at. */
     public Map<ClassType, String> asMap() {
         return Collections.unmodifiableMap(nodeIds);
+    }
+
+    private final Map<String, String> pseudoNodeIds = new LinkedHashMap<>();
+
+    /**
+     * The node an exception of pseudo type {@code kind} (see {@link PseudoExceptions}) leaves the
+     * method at, created on first use. Its chain is just the pseudo type.
+     */
+    public String pseudoNodeFor(String kind) {
+        return pseudoNodeIds.computeIfAbsent(kind, k -> {
+            String id = "uncaught[" + k + "]";
+            CFGNode node = new CFGNode(id, "uncaught " + k, "UncaughtException", -1);
+            node.setException(k, List.of(k));
+            cfg.addNode(node);
+            return id;
+        });
+    }
+
+    /** Every pseudo exception type leaving the method, with the node it leaves at. */
+    public Map<String, String> pseudoMap() {
+        return Collections.unmodifiableMap(pseudoNodeIds);
     }
 }
