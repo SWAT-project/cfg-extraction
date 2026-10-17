@@ -69,6 +69,12 @@ because they are easy to test. Later targets include shell calls, SQL statement 
 uncaught exceptions, so keep target detection separate from the graph construction and avoid
 designs that only work for `AssertionError`.
 
+Library calls are leaf calls, but if an application method library code may call back (an
+override of a library method, a lambda) can reach an assert, every library call counts as an
+assertion point (`CallbackTargets`; off with `--no-callback-targets`). A call site with several
+known application targets gets a CALL edge to each (see `INTER_PROCEDURAL.md`, Dispatch
+Resolution).
+
 Exceptions without a phantom guard (casts, null dereferences, exceptions thrown by library calls,
 Errors) are modelled as pseudo exception types (`PseudoExceptions`, see `INTER_PROCEDURAL.md`):
 extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. The walk never

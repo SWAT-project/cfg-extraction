@@ -59,15 +59,18 @@ Each call site ends up in one of these states:
 | State | CALL/RETURN edges | Marked incomplete |
 | --- | --- | --- |
 | Exactly one target, provably | added (also for repeat and recursive calls) | no |
-| Several possible targets | none | yes, if an application method is among them |
+| Several targets, all known application methods (exact dispatch) | one per target | no |
+| Several possible targets otherwise | none | yes, if an application method is among them |
 | Nothing established (e.g. `invokedynamic`) | none | yes |
 | Receiver untraceable, and a lambda in the program implements its interface | none | yes -- lambda classes are not in the view |
 | Reflective call (`Method.invoke`, `newInstance`, `Class.forName`, `MethodHandle.invoke*`) | none | yes |
 | Only library or blacklisted targets | none | no -- never inlined, so nothing is missing |
 
-Ambiguous call sites get no CALL edge on purpose. SWAT walks this graph in lockstep with real
-executions, so an edge into a body that does not actually run would desynchronise the branch
-structure -- worse than having no edge.
+A call site with several known targets gets a CALL edge to each, with the same return site and
+handlers. SWAT's walk does not follow it (it cannot know which body runs) but finds its place
+again inside the callee by branch key, and the summaries take the union over the callees. Other
+ambiguous call sites get no CALL edge: their targets are not all known, so the graph cannot list
+them.
 
 Instead such a node is marked **incomplete**, which says two things at once:
 
@@ -165,7 +168,18 @@ Each node includes metadata about which method it belongs to:
 }
 ```
 
-### 7. Branch Keys
+### 7. Library Callbacks
+
+Library calls are not expanded, but library code can call back into the application: an override
+of a library method (`toString()`, a `Reader` handed to a `PushbackReader`) or a lambda passed to
+library code. `CallbackTargets` collects those methods; if one of them may reach an assert (the
+same reachability `ClinitTargets` computes for static initializers), every library call site is
+reported in `assertionPointIds` (not marked incomplete: the walk goes on). The graph records which
+callbacks did it in `metadata.callbacksReachingAssert`. `--no-callback-targets` turns this off
+(unsound: an assert reached only through such a callback is then missed). SWAT's executor flags
+the branches of a callback that actually runs, and the walk masks them.
+
+### 8. Branch Keys
 
 Every branch node (an `if`, a switch case, a phantom guard) and every call site has a `key`:
 `<owner>.<name><desc>|<line>|<kind>|<ordinal>`, with kind `if`, `switch`, `arr`, `newarr`, `div` or
