@@ -36,9 +36,16 @@ visualize/.venv/bin/python visualize/visualize_cfg.py <graph.json> [out.svg] [--
 ## The one invariant that matters
 
 SWAT walks this graph **in lockstep** with the execution tree, pairing branch for branch **by
-position**. No ids are ever compared. If the graph has a branch the execution doesn't, or the
-other way round, every later pairing on that path is off. This fails silently: it prunes the wrong
-paths and can produce false SAFE verdicts.
+position**. If the graph has a branch the execution doesn't, or the other way round, every later
+pairing on that path is off: it prunes the wrong paths and can produce false SAFE verdicts. SWAT
+checks the pairing where both sides have a key (`BranchKeys`, the node's `key` field) and stops
+trusting the graph at a mismatch, but a branch without a key goes unchecked, so the structure must
+still be right.
+
+Branch and call-site keys are `owner.name(desc)|line|kind|ordinal`, and must equal what SWAT's
+executor computes from bytecode (`instrument/BranchKeys`). SootUp keeps no bytecode offsets and its
+statement order is not the bytecode order (not even within a line), so `BranchKeys` reads the class
+file and only keeps an ordinal it can prove; otherwise it writes `*` or no key.
 
 So every change to the branch structure must match what SWAT's executor actually reports. Check
 `../SWAT/symbolic-executor` (mainly `SymbolicInstructionVisitor`, and the transformers under

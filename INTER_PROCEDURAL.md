@@ -165,6 +165,17 @@ Each node includes metadata about which method it belongs to:
 }
 ```
 
+### 7. Branch Keys
+
+Every branch node (an `if`, a switch case, a phantom guard) and every call site has a `key`:
+`<owner>.<name><desc>|<line>|<kind>|<ordinal>`, with kind `if`, `switch`, `arr`, `newarr`, `div` or
+`call:<name><desc>`, and the ordinal the instruction's position among those of its kind on the
+line, in bytecode order. A switch case appends `#<value>`, a dimension check of a multi-dimensional
+allocation `#<n>`. SWAT's executor reports the same key for each branch, with the frames popped and
+pushed since the previous one, and SWAT checks its walk against them and resynchronises by them.
+Where the extractor cannot prove the ordinal (same-kind instructions on a line that it cannot tell
+apart, see `BranchKeys`), it writes `*`; where its view of a line differs from the bytecode, no key.
+
 ## Example Output
 
 For this simple program:
