@@ -120,6 +120,16 @@ public class ReceiverTypeResolver {
         }
 
         /**
+         * Every method the call site may run, if there are several and they are all known (exact
+         * dispatch to more than one override); empty otherwise. Such a call site gets a CALL edge to
+         * each: SWAT's walk does not follow it (it cannot know which one runs) but finds its place
+         * again by key inside the callee, and the summaries take the union over the callees.
+         */
+        public Optional<Set<MethodSignature>> getExactTargets() {
+            return precision == Precision.EXACT && targets.size() > 1 ? Optional.of(targets) : Optional.empty();
+        }
+
+        /**
          * Whether the call site might run application code that {@link #getTargets()} omits.
          *
          * <p>Library overrides left out of the enumeration do not count: they are never inlined,
