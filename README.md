@@ -5,6 +5,8 @@ A modular Java bytecode analysis tool that extracts Control Flow Graphs (CFGs) u
 ## Features
 
 - **Intra-procedural CFG extraction** from Java bytecode (.class files)
+- **Inter-procedural CFG extraction** for SWAT's static pre-analysis (see below and
+  [INTER_PROCEDURAL.md](INTER_PROCEDURAL.md))
 - **JSON export** for easy integration with other tools
 - **Python visualization** with matplotlib and networkx
 - **Modular architecture** designed for extensibility
@@ -68,6 +70,24 @@ python visualize_cfg.py ../output/Main_main.json
 # Visualize all CFGs in the output directory
 python visualize_cfg.py ../output/
 ```
+
+## Use with SWAT
+
+SWAT's static pre-analysis runs this extractor on the target and prunes branches that cannot lead
+to an assert with the resulting graph. SWAT expects this repository cloned next to it
+(`<workspace>/SWAT` and `<workspace>/cfg-extraction`) and runs the fat jar from `build/libs/`:
+
+```bash
+./gradlew fatJar
+java -ea -jar build/libs/cfg-extractor-1.0-SNAPSHOT-all.jar <classpath> <out-dir> <MainClass> main inter
+# --no-callback-targets: do not count library calls as possible asserts when application code
+#                        that library code may call back can reach one (unsound; for comparison)
+```
+
+The output `<MainClass>_main_interprocedural.json` is SWAT's graph. Its format and how it is
+built (dispatch, call stack, exceptions, branch keys) are in [INTER_PROCEDURAL.md](INTER_PROCEDURAL.md);
+`CLAUDE.md` lists the invariants the graph must keep for SWAT. `scripts/regression_sweep.py` runs a
+jar over the SV-COMP benchmarks and checks that SWAT can load every graph.
 
 ## Usage
 
@@ -211,9 +231,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 }
 ```
 
-### 2. Inter-Procedural Analysis (Future)
+### 2. Inter-Procedural Analysis
 
-To extend to inter-procedural analysis:
+Implemented in `InterProceduralCFGExtractor` (see [INTER_PROCEDURAL.md](INTER_PROCEDURAL.md)).
+The sketch below is the original plan, kept for orientation:
 
 **a) Use SootUp's CallGraph functionality:**
 
@@ -364,8 +385,8 @@ for cfg_file in Path('output').glob('*.json'):
 
 ## Future Enhancements
 
-- [ ] Inter-procedural CFG extraction with call edges
-- [ ] Context-sensitive analysis
+- [x] Inter-procedural CFG extraction with call edges
+- [x] Context-sensitive analysis (call stack on CALL edges, used by SWAT's walk)
 - [ ] Data flow analysis (reaching definitions, live variables)
 - [ ] Control dependence graph (CDG)
 - [ ] Program dependence graph (PDG)
