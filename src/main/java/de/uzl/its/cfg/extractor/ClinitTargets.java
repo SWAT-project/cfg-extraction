@@ -37,8 +37,10 @@ import sootup.java.core.views.JavaView;
  * <p>Which use of a class comes first is only known at run time, so every trigger counts. The
  * analysis over-approximates in other ways too, which only costs pruning: calls are followed to
  * every application override, initializers of classes touched on the way are included, and an
- * {@code invokedynamic} or reflective call counts as reaching an assert. Calls into library code
- * are not followed (the same assumption the graph makes everywhere else).
+ * {@code invokedynamic} other than a lambda or string concatenation, or a reflective call, counts
+ * as reaching an assert. Calls into library code are not followed (the same assumption the graph
+ * makes everywhere else). {@link #mayReachTarget} answers the same for any method, for
+ * {@link CallbackTargets}.
  */
 final class ClinitTargets {
 
@@ -103,13 +105,20 @@ final class ClinitTargets {
     private boolean reachesTarget(ClassType type) {
         Optional<SootMethod> clinit = view.getClass(type).flatMap(c -> c.getMethodsByName("<clinit>").stream()
                 .map(m -> (SootMethod) m).findFirst());
-        if (clinit.isEmpty()) {
-            return false;
-        }
+        return clinit.isPresent() && reachesTargetFrom(clinit.get(), type);
+    }
+
+    /** Whether running {@code method} may reach an assertion point, through calls and initializers. */
+    boolean mayReachTarget(SootMethod method) {
+        return reachesTargetFrom(method, null);
+    }
+
+    /** A worklist over the methods {@code start} may run, transitively; {@code self} is the class being initialized, if any. */
+    private boolean reachesTargetFrom(SootMethod start, ClassType self) {
         Deque<SootMethod> work = new ArrayDeque<>();
         Set<MethodSignature> seen = new HashSet<>();
-        work.add(clinit.get());
-        seen.add(clinit.get().getSignature());
+        work.add(start);
+        seen.add(start.getSignature());
         while (!work.isEmpty()) {
             SootMethod method = work.poll();
             if (!method.hasBody()) {
@@ -120,7 +129,7 @@ final class ClinitTargets {
                     return true;
                 }
                 for (ClassType touched : triggeredClasses(stmt)) {
-                    if (!touched.equals(type) && initMayReachTarget(touched)) {
+                    if (!touched.equals(self) && initMayReachTarget(touched)) {
                         return true;
                     }
                 }
@@ -131,8 +140,19 @@ final class ClinitTargets {
                 if (invoke.isEmpty()) {
                     continue;
                 }
-                if (invoke.get() instanceof JDynamicInvokeExpr
-                        || InterProceduralCFGExtractor.isReflectiveCall(invoke.get())) {
+                if (invoke.get() instanceof JDynamicInvokeExpr indy) {
+                    Optional<Set<SootMethod>> targets = CallbackTargets.lambdaTargets(indy, view);
+                    if (targets.isEmpty()) {
+                        return true; // an invokedynamic we cannot see through
+                    }
+                    for (SootMethod target : targets.get()) {
+                        if (seen.add(target.getSignature())) {
+                            work.add(target);
+                        }
+                    }
+                    continue;
+                }
+                if (InterProceduralCFGExtractor.isReflectiveCall(invoke.get())) {
                     return true;
                 }
                 for (SootMethod callee : possibleCallees(invoke.get().getMethodSignature())) {

@@ -52,6 +52,14 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final List<String> assertionPointIds;
     private final Set<String> methodPrefixBlacklist;
     private ClinitTargets clinitTargets;
+    /** Library call sites (not expanded), and whether they may call back into an assert (see CallbackTargets). */
+    private final List<String> libraryCallSiteIds = new ArrayList<>();
+    private boolean callbackTargets = true;
+
+    /** Whether to count library calls as assertion points when a callback may reach an assert. */
+    public void setCallbackTargets(boolean callbackTargets) {
+        this.callbackTargets = callbackTargets;
+    }
 
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.receiverTypeResolver = new ReceiverTypeResolver(view);
@@ -104,6 +112,19 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         // bounded by the number of reachable methods, recursion included.
         extractMethodRecursively(method, combinedCFG, 0);
         addExceptionalReturnEdges(combinedCFG);
+
+        // Library code may call back into the application; if a callback can reach an assert, so
+        // may any library call (see CallbackTargets).
+        if (callbackTargets) {
+            List<SootMethod> reaching = CallbackTargets.reachingTarget(view, clinitTargets);
+            if (!reaching.isEmpty()) {
+                logger.info("Callbacks that may reach an assert: {}; marking {} library call(s) as assertion points",
+                        reaching.stream().map(m -> m.getSignature().toString()).toList(), libraryCallSiteIds.size());
+                this.assertionPointIds.addAll(libraryCallSiteIds);
+                combinedCFG.addMetadata("callbacksReachingAssert",
+                        reaching.stream().map(m -> m.getSignature().toString()).toList());
+            }
+        }
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
@@ -259,6 +280,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                             + "marking call site as incomplete",
                             stmt, methodSig, dispatch.getTargets().size());
                     markIncomplete(combinedCFG, callSiteId);
+                } else {
+                    addLibraryCallSite(calleeOrNull(stmt), callSiteId);
                 }
                 continue;
             }
@@ -268,6 +291,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             // Check if method is blacklisted
             if (isBlacklisted(calleeSig)) {
                 logger.debug("Skipping blacklisted method: {}", calleeSig);
+                addLibraryCallSite(calleeSig, callSiteId);
                 continue;
             }
 
@@ -275,6 +299,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             // library methods now resolve. Only expand methods from the analysed input path.
             if (!isApplicationMethod(calleeSig)) {
                 logger.debug("Skipping library method: {}", calleeSig);
+                addLibraryCallSite(calleeSig, callSiteId);
                 continue;
             }
 
@@ -282,6 +307,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
             if (calleeOpt.isEmpty()) {
                 logger.debug("Callee not found in view (may be library method): {}", calleeSig);
+                addLibraryCallSite(calleeSig, callSiteId);
                 continue;
             }
 
@@ -458,6 +484,18 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
      * missing, and a consumer pairing this graph with a real execution positionally would have
      * every later pairing on the path shifted by them.
      */
+    /** A call into library code, which may call back into the application (see CallbackTargets). */
+    private void addLibraryCallSite(MethodSignature callee, String callSiteId) {
+        // SWAT's Verifier stubs never call back.
+        if (callee == null || !callee.getDeclClassType().getFullyQualifiedName().equals("org.sosy_lab.sv_benchmarks.Verifier")) {
+            libraryCallSiteIds.add(callSiteId);
+        }
+    }
+
+    private MethodSignature calleeOrNull(Stmt stmt) {
+        return getInvokeExpr(stmt).map(AbstractInvokeExpr::getMethodSignature).orElse(null);
+    }
+
     private void markIncomplete(ControlFlowGraph combinedCFG, String nodeId) {
         Optional<CFGNode> node = combinedCFG.getNode(nodeId);
         assert node.isPresent() : "Cannot mark unknown node as incomplete: " + nodeId;

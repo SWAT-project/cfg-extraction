@@ -46,7 +46,13 @@ public class Main {
 
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
+    /** See InterProceduralCFGExtractor.setCallbackTargets; off with --no-callback-targets. */
+    private static boolean callbackTargets = true;
+
     public static void main(String[] args) {
+        // Options may come anywhere; the rest are positional.
+        callbackTargets = !java.util.Arrays.asList(args).contains("--no-callback-targets");
+        args = java.util.Arrays.stream(args).filter(a -> !a.startsWith("--")).toArray(String[]::new);
         if (args.length < 2) {
             printUsage();
             System.exit(1);
@@ -182,6 +188,7 @@ public class Main {
             logger.info("Using inter-procedural analysis");
             InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view,
                     Collections.singletonList(entryMethod));
+            interExtractor.setCallbackTargets(callbackTargets);
 
             // Extract single inter-procedural CFG
             ControlFlowGraph cfg = interExtractor.extractCFG(entryMethod, view);
@@ -291,7 +298,7 @@ public class Main {
         System.out.println();
         System.out.println("Usage:");
         System.out.println(
-                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type]");
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");
