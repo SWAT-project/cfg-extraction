@@ -51,6 +51,17 @@ public class CFGNode {
      */
     private String handlerKey;
 
+    /** For a branch or a call site, its key as SWAT's executor reports it (see BranchKeys); else null. */
+    private String key;
+
+    public String getKey() {
+        return key;
+    }
+
+    public void setKey(String key) {
+        this.key = key;
+    }
+
     public String getHandlerKey() {
         return handlerKey;
     }

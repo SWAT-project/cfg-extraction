@@ -217,6 +217,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 cfg.getNodes().size(), cfg.getEdges().size());
 
         annotateHandlerKeys(method, stmtGraph, stmts, entryIds, cfg);
+        BranchKeys.annotate(method, view, stmtGraph, stmtToId, entryIds, cfg);
 
         return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap(), escapes.pseudoMap());
     }
@@ -326,7 +327,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         });
     }
 
-    private static String jvmDescriptor(SootMethod method) {
+    static String jvmDescriptor(SootMethod method) {
         StringBuilder d = new StringBuilder("(");
         for (sootup.core.types.Type p : method.getParameterTypes()) {
             d.append(jvmDescriptor(p));
@@ -334,7 +335,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         return d.append(")").append(jvmDescriptor(method.getReturnType())).toString();
     }
 
-    private static String jvmDescriptor(sootup.core.types.Type t) {
+    static String jvmDescriptor(sootup.core.types.Type t) {
         if (t instanceof sootup.core.types.ArrayType a) {
             return "[".repeat(a.getDimension()) + jvmDescriptor(a.getBaseType());
         }
