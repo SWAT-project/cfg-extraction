@@ -160,7 +160,6 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             newNode.setMetadata("method: " + methodSig.toString());
             newNode.setIncomplete(node.isIncomplete());
             newNode.setException(node.getExceptionType(), node.getExceptionTypeChain());
-            newNode.setHandlerKey(node.getHandlerKey());
             newNode.setKey(node.getKey());
             combinedCFG.addNode(newNode);
         }

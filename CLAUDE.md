@@ -72,9 +72,8 @@ designs that only work for `AssertionError`.
 Exceptions without a phantom guard (casts, null dereferences, exceptions thrown by library calls,
 Errors) are modelled as pseudo exception types (`PseudoExceptions`, see `INTER_PROCEDURAL.md`):
 extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. The walk never
-follows them; after such an exception SWAT gives up until the execution enters a handler, then resumes at the
-node with the same `handlerKey` (`annotateHandlerKeys`). The key must match the executor's
-`HandlerKeys` exactly; change both together.
+follows them; after such an exception SWAT stops trusting the graph until it finds it again at a
+later branch by key (resync, see the branch keys below).
 
 ## SootUp traps
 
