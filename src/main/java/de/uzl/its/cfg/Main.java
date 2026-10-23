@@ -10,21 +10,25 @@ import de.uzl.its.cfg.serializer.MetadataJsonSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.inputlocation.AnalysisInputLocation;
-import sootup.core.model.SootClass;
 import sootup.core.model.SootMethod;
-import sootup.core.signatures.MethodSignature;
-import sootup.java.bytecode.inputlocation.JavaClassPathAnalysisInputLocation;
+import sootup.core.model.SourceType;
+import sootup.core.util.PathUtils;
+import sootup.java.bytecode.frontend.inputlocation.PathBasedAnalysisInputLocation;
+import sootup.java.bytecode.frontend.inputlocation.JrtFileSystemAnalysisInputLocation;
 import sootup.java.core.JavaIdentifierFactory;
-import sootup.java.core.JavaProject;
-import sootup.java.core.language.JavaLanguage;
+import sootup.java.core.JavaSootClass;
 import sootup.java.core.types.JavaClassType;
 import sootup.java.core.views.JavaView;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -42,7 +46,13 @@ public class Main {
 
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
+    /** See InterProceduralCFGExtractor.setCallbackTargets; off with --no-callback-targets. */
+    private static boolean callbackTargets = true;
+
     public static void main(String[] args) {
+        // Options may come anywhere; the rest are positional.
+        callbackTargets = !java.util.Arrays.asList(args).contains("--no-callback-targets");
+        args = java.util.Arrays.stream(args).filter(a -> !a.startsWith("--")).toArray(String[]::new);
         if (args.length < 2) {
             printUsage();
             System.exit(1);
@@ -78,35 +88,83 @@ public class Main {
         }
     }
 
+    /**
+     * Returns the paths to exclude when scanning {@code entryPath} for classes.
+     *
+     * <p>The output directory is only excluded when it is strictly nested inside the classpath
+     * entry, which is the case that causes trouble. If the two are equal, or the entry sits inside
+     * the output directory, excluding it would discard the very classes we were asked to analyse,
+     * so nothing is ignored and the caller is warned instead.
+     */
+    private static Collection<Path> ignoredPathsFor(Path entryPath, Path outputDir) {
+        Path ignore = outputDir.toAbsolutePath().normalize();
+        if (ignore.startsWith(entryPath) && !ignore.equals(entryPath)) {
+            return List.of(ignore);
+        }
+        if (entryPath.startsWith(ignore)) {
+            logger.warn("Classpath entry {} lies inside the output directory {}; "
+                    + "analysing it as-is, output artifacts may be picked up as classes",
+                    entryPath, ignore);
+        }
+        return List.of();
+    }
+
     private static void extractCFGs(String inputPath, Path outputDir,
-                                    String entryClassName, String entryMethodName,
-                                    String analysisType) throws IOException {
+            String entryClassName, String entryMethodName,
+            String analysisType) throws IOException {
 
         // Step 1: Create SootUp View for bytecode analysis
         logger.info("Creating SootUp view for bytecode analysis...");
-        AnalysisInputLocation inputLocation = new JavaClassPathAnalysisInputLocation(inputPath);
+        // Built per classpath entry rather than via JavaClassPathAnalysisInputLocation, which
+        // hardcodes an empty ignoredPaths and so would also scan the output directory. That
+        // matters when the output directory is nested inside a classpath entry, as it is when a
+        // target keeps logs/ next to its classes: the executor dumps instrumented copies to
+        // <outputDir>/instrumented, and SootUp then opens each one only to reject it, since the
+        // name declared in the bytecode cannot match the one implied by its path ("Class names do
+        // not match"). Excluding the output directory skips the pointless parse and the
+        // accompanying warnings, and keeps build artifacts out of the analysis scope generally.
+        List<AnalysisInputLocation> inputLocations = new ArrayList<>();
+        for (String entry : inputPath.split(File.pathSeparator)) {
+            if (entry.isEmpty()) {
+                continue;
+            }
+            Path entryPath = Paths.get(entry).toAbsolutePath().normalize();
+            if (!Files.exists(entryPath) || !(Files.isDirectory(entryPath) || PathUtils.isArchive(entryPath))) {
+                logger.warn("Skipping classpath entry (not a directory or archive): {}", entryPath);
+                continue;
+            }
+            inputLocations.add(PathBasedAnalysisInputLocation.create(entryPath, SourceType.Application,
+                    List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */,
+                    ignoredPathsFor(entryPath, outputDir)));
+        }
+        if (inputLocations.isEmpty()) {
+            throw new IllegalArgumentException("No usable classpath entries in: " + inputPath);
+        }
 
-        JavaProject project = JavaProject.builder(new JavaLanguage(8))
-                .addInputLocation(inputLocation)
-                .build();
+        // The JDK is needed so that the view's TypeHierarchy can resolve java.lang.* types.
+        // Without it, anything that looks up an exception type (e.g. StmtExceptionAnalyzer)
+        // fails with "The given exceptionType ... is not in type hierarchy!".
+        AnalysisInputLocation jdkInputLocation = new JrtFileSystemAnalysisInputLocation(SourceType.Library,
+                List.of() /* no BodyInterceptors to prevent Jimple reshaping the code */);
 
-        JavaView view = project.createView();
+        inputLocations.add(jdkInputLocation);
+        JavaView view = new JavaView(inputLocations);
         logger.info("SootUp view created successfully");
 
         // Step 2: Get all classes in the analysis scope
         logger.info("Discovering classes...");
-        JavaIdentifierFactory identifierFactory = (JavaIdentifierFactory) view.getIdentifierFactory();
+        JavaIdentifierFactory identifierFactory = view.getIdentifierFactory();
 
         // Start with the entry class
         JavaClassType entryClassType = identifierFactory.getClassType(entryClassName);
-        Optional<? extends SootClass<?>> entryClassOpt = view.getClass(entryClassType);
+        Optional<JavaSootClass> entryClassOpt = view.getClass(entryClassType);
 
         if (!entryClassOpt.isPresent()) {
             logger.error("Entry class not found: {}", entryClassName);
             throw new RuntimeException("Entry class not found: " + entryClassName);
         }
 
-        SootClass<?> entryClass = entryClassOpt.get();
+        JavaSootClass entryClass = entryClassOpt.get();
         logger.info("Found entry class: {}", entryClass.getType());
 
         // Get the entry method
@@ -128,7 +186,9 @@ public class Main {
         if (analysisType.equalsIgnoreCase("inter")) {
             // Inter-procedural analysis: create single CFG with all reachable methods
             logger.info("Using inter-procedural analysis");
-            InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view, Collections.singletonList(entryMethod));
+            InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view,
+                    Collections.singletonList(entryMethod));
+            interExtractor.setCallbackTargets(callbackTargets);
 
             // Extract single inter-procedural CFG
             ControlFlowGraph cfg = interExtractor.extractCFG(entryMethod, view);
@@ -145,7 +205,8 @@ public class Main {
 
             // Extract and save metadata from the CFG
             CFGMetadataExtractor metadataExtractor = new CFGMetadataExtractor();
-            Map<String, Object> metadata = metadataExtractor.extractMetadata(cfg, interExtractor.getMethodBlacklist());
+            Map<String, Object> metadata = metadataExtractor.extractMetadata(cfg,
+                    interExtractor.getMethodPrefixBlacklist());
 
             // Log statistics to console
             metadataExtractor.logStatistics(metadata);
@@ -167,35 +228,41 @@ public class Main {
 
             int methodCount = 0;
             for (SootMethod method : entryClass.getMethods()) {
-            try {
-                logger.info("Processing method: {}", method.getSignature());
+                try {
+                    logger.info("Processing method: {}", method.getSignature());
 
-                ControlFlowGraph cfg = extractor.extractCFG(method, view);
+                    ControlFlowGraph cfg = extractor.extractCFG(method, view);
 
-                // Generate output filename
-                String methodName = method.getName();
-                String safeMethodName = methodName.replace("<", "").replace(">", "");
-                String filename = String.format("%s_%s.json",
-                        entryClass.getType().getClassName(),
-                        safeMethodName);
+                    // Generate output filename
+                    String methodName = method.getName();
+                    String safeMethodName = methodName.replace("<", "").replace(">", "");
+                    String filename = String.format("%s_%s.json",
+                            entryClass.getType().getClassName(),
+                            safeMethodName);
 
-                Path outputFile = outputDir.resolve(filename);
-                serializer.serialize(cfg, outputFile);
+                    Path outputFile = outputDir.resolve(filename);
+                    serializer.serialize(cfg, outputFile);
 
-                methodCount++;
-                logger.info("Saved CFG to: {}", outputFile.getFileName());
+                    methodCount++;
+                    logger.info("Saved CFG to: {}", outputFile.getFileName());
 
-            } catch (Exception e) {
-                logger.warn("Failed to process method {}: {}",
-                           method.getSignature(), e.getMessage());
-            }
+                } catch (Exception e) {
+                    logger.warn("Failed to process method {}: {}",
+                            method.getSignature(), e.getMessage());
+                }
             }
 
             // Step 4: Also extract CFGs for other classes found
             logger.info("Extracting CFGs for all discovered classes...");
-            for (SootClass<?> sootClass : view.getClasses()) {
+            for (JavaSootClass sootClass : view.getClasses().toList()) {
                 // Skip the entry class (already processed)
                 if (sootClass.equals(entryClass)) {
+                    continue;
+                }
+
+                // The view also contains the JDK (needed for type hierarchy resolution only),
+                // so restrict extraction to classes from the analysed input path.
+                if (!sootClass.isApplicationClass()) {
                     continue;
                 }
 
@@ -217,7 +284,7 @@ public class Main {
 
                     } catch (Exception e) {
                         logger.warn("Failed to process method {}: {}",
-                                   method.getSignature(), e.getMessage());
+                                method.getSignature(), e.getMessage());
                     }
                 }
             }
@@ -230,7 +297,8 @@ public class Main {
         System.out.println("CFG Extractor - Extract Control Flow Graphs from Java bytecode");
         System.out.println();
         System.out.println("Usage:");
-        System.out.println("  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type]");
+        System.out.println(
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");

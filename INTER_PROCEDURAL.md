@@ -38,16 +38,57 @@ This provides a complete view of control flow across method boundaries.
 
 ## How It Works
 
-### 1. Call Graph Construction
+### 1. Dispatch Resolution
 
-The analysis uses SootUp's **Class Hierarchy Analysis (CHA)** to build a call graph:
+The method named at a call site is not necessarily the method that runs. The declared receiver
+type of a `virtualinvoke` (or `interfaceinvoke`) is only an upper bound, so a call compiled
+against `java.io.PrintWriter` may well run an override declared in an application class -- and
+that override is often exactly where an `assert` lives.
 
-```java
-CallGraphAlgorithm cga = new ClassHierarchyAnalysisAlgorithm(view);
-CallGraph callGraph = cga.initialize(entryPoints);
-```
+`ReceiverTypeResolver` therefore traces each receiver local back to its origin: allocations,
+copies between locals, casts, `this`, and the return values of the methods it came from. Where
+that pins down the receiver's concrete type, dispatch is resolved against it rather than against
+the declared type.
 
-CHA is conservative and over-approximates possible call targets based on class hierarchy.
+The analysis is flow-insensitive and gives up rather than guessing. A receiver read from a field,
+an array, or a parameter has no traceable origin, so it falls back on the declared type plus its
+concrete application subtypes.
+
+Each call site ends up in one of these states:
+
+| State | CALL/RETURN edges | Marked incomplete |
+| --- | --- | --- |
+| Exactly one target, provably | added (also for repeat and recursive calls) | no |
+| Several targets, all known application methods (exact dispatch) | one per target | no |
+| Several possible targets otherwise | none | yes, if an application method is among them |
+| Nothing established (e.g. `invokedynamic`) | none | yes |
+| Receiver untraceable, and a lambda in the program implements its interface | none | yes -- lambda classes are not in the view |
+| Reflective call (`Method.invoke`, `newInstance`, `Class.forName`, `MethodHandle.invoke*`) | none | yes |
+| Only library or blacklisted targets | none | no -- never inlined, so nothing is missing |
+
+A call site with several known targets gets a CALL edge to each, with the same return site and
+handlers. SWAT's walk does not follow it (it cannot know which body runs) but finds its place
+again inside the callee by branch key, and the summaries take the union over the callees. Other
+ambiguous call sites get no CALL edge: their targets are not all known, so the graph cannot list
+them.
+
+Instead such a node is marked **incomplete**, which says two things at once:
+
+* it is reported in `metadata.assertionPointIds`, so the paths *leading* to it stay interesting.
+  Without this the consumer, which marks interesting paths by walking predecessors, would prune
+  the path before ever arriving -- and a missed assertion point costs soundness, while a spurious
+  one only costs pruning.
+* the node carries `"isIncomplete": true`, so the graph is not trusted *beyond* it. The branches
+  of whatever was not expanded are missing here, and the consumer pairs graph against execution
+  positionally (no ids are matched), so every later pairing on the path would be shifted by them.
+  SWAT's `SANode.walk_till_branch()` stops at such a node and reports "no information", which it
+  already treats as "everything is interesting".
+
+`metadata.isIncomplete` is the graph-wide summary of whether any node is marked.
+
+Library overrides of library methods are deliberately not enumerated. They would resolve to
+library methods, which are never inlined anyway, so listing them would make good resolutions look
+ambiguous without making the graph any more complete.
 
 ### 2. CFG Merging Process
 
@@ -56,12 +97,64 @@ Starting from the entry point method:
 1. **Extract intra-procedural CFG** for current method
 2. **Rename nodes** with method-specific prefixes (`m1_node_0`, `m2_node_1`, etc.)
 3. **Find call sites** (statements with invoke expressions)
-4. **Lookup callees** using the call graph
-5. **Recursively extract** callee CFGs
-6. **Add CALL edge** from call site to callee entry
+4. **Resolve the callee** as described above
+5. **Recursively extract** callee CFGs -- each method once, however many call sites reach it
+6. **Add CALL edge** from call site to callee entry, carrying the call site's return address and
+   handler map (see "Call stack" below)
 7. **Add RETURN edges** from all callee exits to return site
+8. Once every method is in: **add EXCEPTIONAL_RETURN edges** from each `uncaught[T]` node to every
+   caller handler an exception `T` can unwind to
 
-### 3. Node Metadata
+### 3. Call Stack, Not Copies
+
+A method body is in the graph once, so an exit node of a method with several call sites has a
+RETURN edge to each of their return sites, and the graph alone cannot say which one a return
+goes to. The consumer does not need it to: SWAT walks the graph with a **call stack**. On a CALL
+edge it pushes the call site; at an exit it pops and resumes at that frame's `returnSite`.
+Recursion works the same way -- a recursive call site gets a CALL edge back into the body it sits
+in -- so there is no depth limit: `processedMethods` alone bounds construction.
+
+The RETURN edges stay in the graph although the walk does not follow them. Backward reachability
+from an assert behind a return site has to arrive at the callee through them; without them every
+path before the call would be pruned.
+
+### 4. Exceptions
+
+An exception that leaves a method goes to that method's `uncaught[T]` node, one per exception type
+(`stmtType: UncaughtException`). It is **not** an exit node: control does not resume at the
+caller's return site. The node carries `exceptionType` and `exceptionTypeChain` (`T` and its
+superclasses up to `Throwable`), and each CALL edge carries `handlers`, the call site's own
+`{caughtType -> handler node}` map from `exceptionalSuccessors(callStmt)`. At an `uncaught[T]`
+node the walk pops frames until one has a handler for a type in the chain -- first match in chain
+order, i.e. the most specific handler -- and resumes there. An empty stack means the exception
+leaves `main`.
+
+Two things end up at `uncaught[T]`:
+
+* a phantom guard's false branch with no local handler (the guard's exception type is precise);
+* an explicit `throw` with no local handler, via a `THROW` edge. The thrown value is traced to
+  its runtime type with `ReceiverTypeResolver`, through the definitions that *reach* the throw
+  (javac reuses a thrown local's slot for catch variables). A throw caught locally gets a `THROW`
+  edge to that handler instead. If the type is unknown (a rethrow of `@caughtexception`, a
+  parameter) or its possible types reach different destinations, the throw node is marked
+  incomplete.
+
+`EXCEPTIONAL_RETURN` edges (`uncaught[T]` -> every handler it can unwind to, possibly several
+frames up) exist for backward reachability only, like RETURN edges. They are computed with the
+same handler rule the walk uses (`ExceptionHandlers`), so the two cannot disagree.
+
+### 5. Reference Comparisons
+
+SWAT's `RefEqualityTransformer` rewrites every `IF_ACMPEQ` / `IF_ACMPNE` into a call to
+`UtilInstrumented.refEquals(a, b)` plus an `IFNE` / `IFEQ` on its result. `UtilInstrumented` is
+instrumented, so the helper reports one branch (`!shouldUseValueEquality(a, b)`) and, when that is
+taken, a second (`a != b`) before the rewritten comparison reports its own. `RefEqualityEmitter`
+puts the same two branches ahead of every reference `==` / `!=` as `RefEqualityCheck` nodes.
+Null checks compile to `IFNULL` / `IFNONNULL` and are left alone. Without these nodes the walk falls
+two events behind at every reference comparison; this was first observed on
+`MinePump/spec1-5_product1` as a false SAFE.
+
+### 6. Node Metadata
 
 Each node includes metadata about which method it belongs to:
 
@@ -74,6 +167,28 @@ Each node includes metadata about which method it belongs to:
   "metadata": "method: <Main: void main(java.lang.String[])>"
 }
 ```
+
+### 7. Library Callbacks
+
+Library calls are not expanded, but library code can call back into the application: an override
+of a library method (`toString()`, a `Reader` handed to a `PushbackReader`) or a lambda passed to
+library code. `CallbackTargets` collects those methods; if one of them may reach an assert (the
+same reachability `ClinitTargets` computes for static initializers), every library call site is
+reported in `assertionPointIds` (not marked incomplete: the walk goes on). The graph records which
+callbacks did it in `metadata.callbacksReachingAssert`. `--no-callback-targets` turns this off
+(unsound: an assert reached only through such a callback is then missed). SWAT's executor flags
+the branches of a callback that actually runs, and the walk masks them.
+
+### 8. Branch Keys
+
+Every branch node (an `if`, a switch case, a phantom guard) and every call site has a `key`:
+`<owner>.<name><desc>|<line>|<kind>|<ordinal>`, with kind `if`, `switch`, `arr`, `newarr`, `div` or
+`call:<name><desc>`, and the ordinal the instruction's position among those of its kind on the
+line, in bytecode order. A switch case appends `#<value>`, a dimension check of a multi-dimensional
+allocation `#<n>`. SWAT's executor reports the same key for each branch, with the frames popped and
+pushed since the previous one, and SWAT checks its walk against them and resynchronises by them.
+Where the extractor cannot prove the ordinal (same-kind instructions on a line that it cannot tell
+apart, see `BranchKeys`), it writes `*`; where its view of a line differs from the bytecode, no key.
 
 ## Example Output
 
@@ -105,7 +220,9 @@ The inter-procedural CFG contains:
   "source": "m1_node_15",
   "target": "m3_node_0",
   "type": "CALL",
-  "label": "ack"
+  "label": "ack",
+  "returnSite": "m1_node_16",
+  "handlers": { "java.lang.ArithmeticException": "m1_node_20" }
 }
 ```
 
@@ -117,84 +234,94 @@ The inter-procedural CFG contains:
 }
 ```
 
-## Depth Limit
-
-To prevent infinite recursion (e.g., recursive methods), the analysis has a **depth limit of 5**:
-
-```java
-extractMethodRecursively(method, combinedCFG, depth + 1, maxDepth=5);
-```
-
-Methods beyond this depth are not inlined. You can adjust this in:
-```
-src/main/java/com/cfgextractor/extractor/InterProceduralCFGExtractor.java:70
-```
-
 ## Visualization
 
-The Python visualization script already supports CALL and RETURN edges:
-
 ```bash
-source venv/bin/activate
+source visualize/.venv/bin/activate
 python visualize/visualize_cfg.py output/Main_main_interprocedural.json
 ```
+
+This writes `Main_main_interprocedural.png` plus a `.svg` (preferred for large
+graphs) and a `Main_main_interprocedural_callgraph.png/.svg` overview with one
+node per method.
+
+Each method is drawn as its own labelled frame, read top to bottom, with the
+frames placed side by side (`--layout call-tree` cascades callees below their
+call site instead). Straight-line statements are merged into basic blocks that
+still list every statement, and call/return edges are additionally spelled out
+in text inside the blocks (`→ calls Arrays1.doGet · m8_node_0`) so they can be
+followed while zoomed in. `--focus <method>` restricts the drawing to one
+method. See the visualization section of README.md for all options.
 
 **Edge colors**:
 - Blue dotted: CALL edges
 - Purple dotted: RETURN edges
 - Green solid: TRUE branch
 - Red solid: FALSE branch
-- Black solid: Normal flow
+- Green/red dashed: phantom guard branches (safe / exception)
+- Orange dashed: EXCEPTION edges (SootUp-inferred; the walk does not follow them)
+- Orange solid: THROW edges
+- Dark red dotted: EXCEPTIONAL_RETURN edges
+- Dark grey solid: Normal flow
 
 ## Limitations & Future Work
 
 ### Current Limitations
 
-1. **Call Graph Precision**: Uses CHA which over-approximates
-   - Solution: Implement RTA (Rapid Type Analysis) or points-to analysis
+1. **Receiver Origins**: A receiver read from a field, an array, or a parameter is untraceable,
+   so the call site falls back on the declared type and is usually reported as ambiguous
+   - Solution: propagate types through fields and across call sites (a points-to analysis)
 
-2. **Depth Limit**: Recursive methods are cut off
-   - Solution: Use cycle detection instead of depth limit
+2. **Unmodelled exceptions**: exceptions SWAT does not guard -- a `NullPointerException`, a
+   `ClassCastException`, anything thrown inside library code, Errors -- have no precise type or
+   destination in the graph. They are modelled as pseudo exception types (`PseudoExceptions`):
+   every statement that may throw one (calls, instance field and array accesses, casts, array
+   lengths, monitors, throws; any statement for Errors) gets EXCEPTION edges to every local
+   handler that might catch it and to an `uncaught[?Exception]` / `uncaught[?Error]` node, and
+   each CALL edge lists its handlers that might catch each pseudo type (`unknownHandlers`). SWAT's
+   summaries treat a pseudo escape as caught by any listed handler, or by none. So the paths into
+   such handlers stay interesting. Where the execution goes after such an exception the graph
+   cannot say; the executor reports it in the trace (`UNMODELLED_EXCEPTION`), and SWAT stops
+   trusting the graph until it finds it again at a later branch by its key (see Branch Keys).
+   Pseudo types are only emitted if some handler in the program could catch them
 
-3. **Context Sensitivity**: Doesn't track calling contexts
-   - Solution: Add context-sensitive analysis mode
+3. **Nested try blocks**: of two handlers catching `T`, the one with the more specific type is
+   chosen. An inner `catch (Exception e)` really shadows an outer `catch (RuntimeException e)`,
+   but SootUp's handler map has lost the order
 
-4. **Virtual Calls**: May include unreachable targets
-   - Solution: Use more precise call graph algorithms
+4. **Static Initializers**: `<clinit>` is never entered, so its body is not in the graph. SWAT
+   masks `<clinit>` subtrees out of the lockstep walk entirely (`DFS.py`, `mask_sa_node`) and
+   treats everything inside as interesting. What must not be pruned is the path to the statement
+   that first uses the class, so `ClinitTargets` marks every statement that may initialize a class
+   whose initializer can reach an assert (`new`, static calls, static field accesses, also through
+   superclasses; transitively through calls and other initializers) as an assertion point. Which
+   use comes first is only known at run time, so every such use counts
+   - Solution (for precision): add implicit call edges where a class is first used
+
+5. **Ambiguous Calls**: Several possible targets means no CALL edge at all, so the callee bodies
+   are missing from the graph even though one of them runs
+   - Solution: a graph format that can express alternative callees
 
 ### Future Enhancements
 
-#### Context-Sensitive Analysis
+#### More Precise Receiver Types
 
-Add calling context to node IDs:
-
-```java
-// Instead of: m2_node_5
-// Use: m2_[main->ack]_node_5  (called from main)
-//      m2_[ack->ack]_node_5   (called from ack recursively)
-```
-
-This enables:
-- More precise data flow analysis
-- Better taint tracking
-- Accurate constant propagation
-
-#### Smart Inlining
-
-Instead of fixed depth limit, use heuristics:
-- Inline small methods completely
-- Summarize large methods
-- Detect and handle cycles specially
-
-#### Alternative Call Graph Algorithms
+Dispatch resolution is only as good as the receiver types it can infer, and today those stop at
+the method boundary. A whole-program analysis would carry types through fields and across call
+sites, turning many of the currently ambiguous call sites into resolved ones:
 
 ```java
-// Rapid Type Analysis (more precise)
+// Rapid Type Analysis: restricts dispatch to types the program actually instantiates
 CallGraphAlgorithm cga = new RapidTypeAnalysisAlgorithm(view);
 
 // Points-to analysis (most precise, slower)
 // Requires Qilin integration
 ```
+
+Note that SootUp's body interceptors are *not* an option here. `LocalSplitter` would remove the
+need for the receiver-type filter that works around javac's local slot reuse, but interceptors
+reshape Jimple, and the branch structure of the emitted graph has to match what SWAT observes at
+runtime statement for statement.
 
 ## References
 

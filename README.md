@@ -5,6 +5,8 @@ A modular Java bytecode analysis tool that extracts Control Flow Graphs (CFGs) u
 ## Features
 
 - **Intra-procedural CFG extraction** from Java bytecode (.class files)
+- **Inter-procedural CFG extraction** for SWAT's static pre-analysis (see below and
+  [INTER_PROCEDURAL.md](INTER_PROCEDURAL.md))
 - **JSON export** for easy integration with other tools
 - **Python visualization** with matplotlib and networkx
 - **Modular architecture** designed for extensibility
@@ -27,7 +29,8 @@ cfg-extractor/
 ├── target/                   # Input: Java .class files
 ├── output/                   # Output: Generated JSON CFGs
 ├── visualize/                # Python visualization tools
-│   ├── visualize_cfg.py     # Main visualization script
+│   ├── visualize_cfg.py     # Main visualization script (CLI)
+│   ├── graphviz_render.py   # Graphviz layout backend
 │   └── requirements.txt     # Python dependencies
 └── README.md
 ```
@@ -56,16 +59,35 @@ This will:
 ### 3. Visualize CFGs
 
 ```bash
-# Install Python dependencies
+# Install dependencies (Graphviz provides the `dot` binary used for layout)
+sudo apt install graphviz
 cd visualize
 pip install -r requirements.txt
 
-# Visualize a single CFG
+# Visualize a single CFG (writes both .png and .svg)
 python visualize_cfg.py ../output/Main_main.json
 
 # Visualize all CFGs in the output directory
 python visualize_cfg.py ../output/
 ```
+
+## Use with SWAT
+
+SWAT's static pre-analysis runs this extractor on the target and prunes branches that cannot lead
+to an assert with the resulting graph. SWAT expects this repository cloned next to it
+(`<workspace>/SWAT` and `<workspace>/cfg-extraction`) and runs the fat jar from `build/libs/`:
+
+```bash
+./gradlew fatJar
+java -ea -jar build/libs/cfg-extractor-1.0-SNAPSHOT-all.jar <classpath> <out-dir> <MainClass> main inter
+# --no-callback-targets: do not count library calls as possible asserts when application code
+#                        that library code may call back can reach one (unsound; for comparison)
+```
+
+The output `<MainClass>_main_interprocedural.json` is SWAT's graph. Its format and how it is
+built (dispatch, call stack, exceptions, branch keys) are in [INTER_PROCEDURAL.md](INTER_PROCEDURAL.md);
+`CLAUDE.md` lists the invariants the graph must keep for SWAT. `scripts/regression_sweep.py` runs a
+jar over the SV-COMP benchmarks and checks that SWAT can load every graph.
 
 ## Usage
 
@@ -92,15 +114,57 @@ java -jar cfg-extractor.jar target/ output/ Main main
 # Visualize a single CFG
 python visualize_cfg.py output/Main_main.json output.png
 
-# Show interactively
+# Show interactively (uses the matplotlib fallback backend)
 python visualize_cfg.py output/Main_main.json --show
 
-# Generate DOT file for Graphviz
+# Also write the Graphviz DOT source
 python visualize_cfg.py output/Main_main.json --dot
 
 # Batch process all CFGs in a directory
 python visualize_cfg.py output/
 ```
+
+Every run writes a `.png` and a `.svg`; prefer the SVG for large graphs, it
+stays sharp at any zoom level and its text is searchable. Interprocedural CFGs
+also get a `*_callgraph.png/.svg` overview with one node per method.
+
+#### How an interprocedural CFG is drawn
+
+* **One frame per method.** Each method is a Graphviz cluster labelled with its
+  signature and the node id prefix (`[m8_*]`) its statements use, filled with
+  its own colour. By default (`--layout lanes`) the frames are columns that all
+  start at the top and are read downwards; `--layout call-tree` puts each callee
+  below its call site instead.
+* **Basic blocks.** Straight-line statements are merged into one box that lists
+  every statement with its node id and line number. `--no-collapse` keeps one
+  box per statement.
+* **Blocks are ordered by control flow**, not by the order the extractor emitted
+  them, so a branch ends up next to the guard or block it jumps to.
+* **Roles are colour coded** in the box header: entry, exit, call site, branch,
+  phantom guard, uncaught exception, assertion point.
+* **Call/return edges are annotated in text** (`→ calls Arrays1.doGet ·
+  m8_node_0`, `← called from Main.main · m1_node_11`), so a call can be followed
+  while zoomed in without tracing the line across the picture.
+* **Hub nodes are cloned.** A shared `return` or the single uncaught-exception
+  node can have dozens of predecessors. One canonical box keeps the outgoing
+  edges, every other predecessor gets a small dashed stub next to it instead of
+  a long edge (`--clone-threshold N`, `0` disables it).
+
+Useful flags for big graphs:
+
+```bash
+# Only draw one method, stub out the rest
+python visualize_cfg.py Main_main_interprocedural.json --focus doGet
+
+# Full type names, one box per statement, no call annotations
+python visualize_cfg.py Main_main.json --full-names --no-collapse --no-call-refs
+
+# Cap the statements listed per block, and raise raster resolution
+python visualize_cfg.py Main_main.json --max-block-stmts 8 --dpi 150
+```
+
+`--engine matplotlib` selects the original networkx/matplotlib renderer; it is
+also used automatically when `dot` is not installed.
 
 ## Output Format
 
@@ -167,9 +231,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 }
 ```
 
-### 2. Inter-Procedural Analysis (Future)
+### 2. Inter-Procedural Analysis
 
-To extend to inter-procedural analysis:
+Implemented in `InterProceduralCFGExtractor` (see [INTER_PROCEDURAL.md](INTER_PROCEDURAL.md)).
+The sketch below is the original plan, kept for orientation:
 
 **a) Use SootUp's CallGraph functionality:**
 
@@ -320,8 +385,8 @@ for cfg_file in Path('output').glob('*.json'):
 
 ## Future Enhancements
 
-- [ ] Inter-procedural CFG extraction with call edges
-- [ ] Context-sensitive analysis
+- [x] Inter-procedural CFG extraction with call edges
+- [x] Context-sensitive analysis (call stack on CALL edges, used by SWAT's walk)
 - [ ] Data flow analysis (reaching definitions, live variables)
 - [ ] Control dependence graph (CDG)
 - [ ] Program dependence graph (PDG)

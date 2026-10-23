@@ -1,2 +1,5 @@
+# The graphviz backend (default) needs the `dot` binary, not a Python package:
+#   Debian/Ubuntu: apt install graphviz
+# networkx and matplotlib are only needed for the --engine matplotlib fallback.
 networkx>=3.0
 matplotlib>=3.5.0

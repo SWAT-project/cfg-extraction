@@ -19,9 +19,9 @@ public class ControlFlowGraph {
     private Map<String, Object> metadata;
 
     public enum AnalysisType {
-        INTRA_PROCEDURAL,    // Single method CFG
-        INTER_PROCEDURAL,    // Cross-method CFG with call edges
-        CONTEXT_SENSITIVE    // Context-sensitive inter-procedural
+        INTRA_PROCEDURAL, // Single method CFG
+        INTER_PROCEDURAL, // Cross-method CFG with call edges
+        CONTEXT_SENSITIVE // Context-sensitive inter-procedural
     }
 
     public ControlFlowGraph(String methodSignature, String className, AnalysisType analysisType) {
@@ -40,6 +40,10 @@ public class ControlFlowGraph {
 
     public void addEdge(CFGEdge edge) {
         edges.add(edge);
+    }
+
+    public void removeEdges(Collection<CFGEdge> edgesToRemove) {
+        edges.removeAll(edgesToRemove);
     }
 
     public void setEntryNode(String nodeId) {
@@ -64,6 +68,11 @@ public class ControlFlowGraph {
 
     public List<CFGNode> getNodes() {
         return Collections.unmodifiableList(nodes);
+    }
+
+    /** The node with this id, if the graph has one. */
+    public Optional<CFGNode> getNode(String nodeId) {
+        return nodes.stream().filter(node -> node.getId().equals(nodeId)).findFirst();
     }
 
     public List<CFGEdge> getEdges() {
