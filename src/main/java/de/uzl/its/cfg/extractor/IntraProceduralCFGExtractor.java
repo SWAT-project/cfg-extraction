@@ -128,8 +128,10 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // statement's guard chain instead of bypassing it.
         Map<Stmt, String> entryIds =
                 new PhantomGuardEmitter(cfg, stmtGraph, hierarchy, escapes).emit(stmts, stmtToId);
-        // Likewise for the branches SWAT's reference-equality helper adds ahead of every IF_ACMP*.
-        entryIds = new RefEqualityEmitter(cfg).emit(stmts, stmtToId, entryIds);
+        // SWAT rewrites every IF_ACMP* into a call to its helper UtilInstrumented.refEquals, whose
+        // branches depend on the runtime types of the operands. They are not in the graph: SWAT
+        // reports them like callbacks, which the walk holds its place for, so the comparison is
+        // just its own JIfStmt here.
 
         SwitchChainEmitter switchEmitter = new SwitchChainEmitter(cfg);
 

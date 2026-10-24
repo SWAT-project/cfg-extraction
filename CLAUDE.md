@@ -55,8 +55,10 @@ So every change to the branch structure must match what SWAT's executor actually
 - one event per switch case tested;
 - implicit guards: integer division, array access, array allocation;
 - SWAT's reference-equality rewrite: every `IF_ACMPEQ`/`IF_ACMPNE` becomes a call to the
-  instrumented helper `UtilInstrumented.refEquals`, which emits extra branches before the
-  comparison's own.
+  instrumented helper `UtilInstrumented.refEquals` and a jump on its result. The helper's branches
+  depend on the operands' runtime types, so they are not in the graph: SWAT flags them like
+  callbacks (`ShadowContext.inSwatHelper`) and the walk holds its place. The comparison is its own
+  `if` (same kind and ordinal as the original `IF_ACMP*`).
 
 Concrete (non-symbolic) branches count too. Invokes, returns, `goto` and `athrow` do not.
 

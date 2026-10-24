@@ -147,12 +147,15 @@ same handler rule the walk uses (`ExceptionHandlers`), so the two cannot disagre
 
 SWAT's `RefEqualityTransformer` rewrites every `IF_ACMPEQ` / `IF_ACMPNE` into a call to
 `UtilInstrumented.refEquals(a, b)` plus an `IFNE` / `IFEQ` on its result. `UtilInstrumented` is
-instrumented, so the helper reports one branch (`!shouldUseValueEquality(a, b)`) and, when that is
-taken, a second (`a != b`) before the rewritten comparison reports its own. `RefEqualityEmitter`
-puts the same two branches ahead of every reference `==` / `!=` as `RefEqualityCheck` nodes.
-Null checks compile to `IFNULL` / `IFNONNULL` and are left alone. Without these nodes the walk falls
-two events behind at every reference comparison; this was first observed on
-`MinePump/spec1-5_product1` as a false SAFE.
+instrumented, so the helper reports branches of its own before the rewritten comparison reports
+its branch. How many depends on the runtime types of `a` and `b` (strings and cached boxes are
+compared by value), so the graph cannot spell them out. SWAT flags them like callbacks instead
+(`ShadowContext.inSwatHelper` in the executor), and the walk holds its place while they run. The
+graph has only the comparison's own `JIfStmt`, with the key of the original `IF_ACMP*` (the
+rewritten jump is an `if` at the same position). Null checks compile to `IFNULL` / `IFNONNULL` and
+are left alone. (Until 2026-10 the graph had the helper's then fixed two branches as
+`RefEqualityCheck` nodes; when the helper changed, every reference comparison put the walk out of
+step.)
 
 ### 6. Node Metadata
 
