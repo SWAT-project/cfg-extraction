@@ -49,9 +49,13 @@ public class Main {
     /** See InterProceduralCFGExtractor.setCallbackTargets; off with --no-callback-targets. */
     private static boolean callbackTargets = true;
 
+    /** See RaiseSites: which sites cannot raise a RuntimeException; off with --no-site-facts. */
+    private static boolean siteFacts = true;
+
     public static void main(String[] args) {
         // Options may come anywhere; the rest are positional.
         callbackTargets = !java.util.Arrays.asList(args).contains("--no-callback-targets");
+        siteFacts = !java.util.Arrays.asList(args).contains("--no-site-facts");
         args = java.util.Arrays.stream(args).filter(a -> !a.startsWith("--")).toArray(String[]::new);
         if (args.length < 2) {
             printUsage();
@@ -189,6 +193,17 @@ public class Main {
             InterProceduralCFGExtractor interExtractor = new InterProceduralCFGExtractor(view,
                     Collections.singletonList(entryMethod));
             interExtractor.setCallbackTargets(callbackTargets);
+            if (siteFacts) {
+                List<Path> classpath = new java.util.ArrayList<>();
+                for (String entry : inputPath.split(java.io.File.pathSeparator)) {
+                    if (!entry.isEmpty()) {
+                        classpath.add(Paths.get(entry));
+                    }
+                }
+                de.uzl.its.cfg.staticcheck.SiteFacts facts = de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck.siteFacts(classpath);
+                logger.info("Site facts: {} world", facts.world);
+                interExtractor.setSiteFacts(facts);
+            }
 
             // Extract single inter-procedural CFG
             ControlFlowGraph cfg = interExtractor.extractCFG(entryMethod, view);
@@ -298,7 +313,7 @@ public class Main {
         System.out.println();
         System.out.println("Usage:");
         System.out.println(
-                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets]");
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");

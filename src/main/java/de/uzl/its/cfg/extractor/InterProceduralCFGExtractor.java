@@ -61,6 +61,14 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         this.callbackTargets = callbackTargets;
     }
 
+    private de.uzl.its.cfg.staticcheck.SiteFacts siteFacts;
+
+    /** Which sites cannot raise a RuntimeException (see RaiseSites); null for no facts. */
+    public void setSiteFacts(de.uzl.its.cfg.staticcheck.SiteFacts siteFacts) {
+        this.siteFacts = siteFacts;
+        intraExtractor.setSiteFacts(siteFacts);
+    }
+
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.receiverTypeResolver = new ReceiverTypeResolver(view);
         this.intraExtractor = new IntraProceduralCFGExtractor(receiverTypeResolver);
@@ -127,6 +135,10 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         }
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
+        if (siteFacts != null) {
+            combinedCFG.addMetadata("siteFacts", siteFacts.world);
+            combinedCFG.addMetadata("raiseSites", intraExtractor.raiseStats.asMap());
+        }
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
         // Derived rather than written during the walk: a default assigned here would overwrite
         // whatever the walk found, and one assigned before the walk would have to be kept in
@@ -182,6 +194,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             newNode.setIncomplete(node.isIncomplete());
             newNode.setException(node.getExceptionType(), node.getExceptionTypeChain());
             newNode.setKey(node.getKey());
+            newNode.setCannotRaise(node.getCannotRaise());
             combinedCFG.addNode(newNode);
         }
 

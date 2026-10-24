@@ -55,6 +55,16 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         this.pseudo = pseudo;
     }
 
+    /** Which sites cannot raise a RuntimeException (see {@link RaiseSites}); null for no facts. */
+    private de.uzl.its.cfg.staticcheck.SiteFacts siteFacts;
+
+    void setSiteFacts(de.uzl.its.cfg.staticcheck.SiteFacts siteFacts) {
+        this.siteFacts = siteFacts;
+    }
+
+    /** What RaiseSites marked so far. */
+    final RaiseSites.Stats raiseStats = new RaiseSites.Stats();
+
     /** Traces thrown values to their type; shared so that its caches outlive a single method. */
     private ReceiverTypeResolver typeResolver;
 
@@ -217,6 +227,9 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 cfg.getNodes().size(), cfg.getEdges().size());
 
         BranchKeys.annotate(method, view, stmtGraph, stmtToId, entryIds, cfg);
+        if (siteFacts != null) {
+            RaiseSites.annotate(method, stmtGraph.getStmts(), stmtToId, cfg, siteFacts, raiseStats);
+        }
 
         return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap(), escapes.pseudoMap());
     }

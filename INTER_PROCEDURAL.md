@@ -190,6 +190,24 @@ pushed since the previous one, and SWAT checks its walk against them and resynch
 Where the extractor cannot prove the ordinal (same-kind instructions on a line that it cannot tell
 apart, see `BranchKeys`), it writes `*`; where its view of a line differs from the bytecode, no key.
 
+### 9. Sites That Cannot Raise
+
+The property pre-check's value analysis (`staticcheck`, see `CLAUDE.md`) says which instructions
+cannot raise a RuntimeException, and `RaiseSites` puts that on the nodes as `cannotRaise`:
+
+* a phantom guard gets `"cannotRaise": true` if the instruction with its exact branch key cannot
+  raise (array access in bounds, division by a non-zero value, non-negative array size);
+* a statement that may raise one itself (array access, `arraylength`, instance field access,
+  reference cast, `throw`, monitors, calls) gets `true` or `false`, matched by method, line and
+  kind. A line is only matched if its kinds are the same in the graph and in the bytecode; an
+  unmatched statement gets `false`. For a call, only the call itself counts (a null receiver, a
+  library callee); what an application callee throws is in its own statements.
+
+Other nodes have no `cannotRaise`. `metadata.siteFacts` says which facts were used: `closed` (the
+check's facts for the methods reachable from `main`, which hold because the world is closed) or
+`local` (what each method shows itself); `metadata.raiseSites` counts the marked nodes.
+`--no-site-facts` leaves all of it out.
+
 ## Example Output
 
 For this simple program:

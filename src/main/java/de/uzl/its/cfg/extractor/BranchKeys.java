@@ -237,7 +237,7 @@ final class BranchKeys {
         };
     }
 
-    private static String nameAndDescriptor(MethodSignature signature) {
+    static String nameAndDescriptor(MethodSignature signature) {
         StringBuilder d = new StringBuilder(signature.getName()).append("(");
         for (sootup.core.types.Type p : signature.getParameterTypes()) {
             d.append(IntraProceduralCFGExtractor.jvmDescriptor(p));
