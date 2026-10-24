@@ -8,6 +8,7 @@ import de.uzl.its.cfg.model.CFGEdge.EdgeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.jimple.common.expr.AbstractInvokeExpr;
+import sootup.core.jimple.common.expr.JDynamicInvokeExpr;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
@@ -339,7 +340,15 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // and an assertion among the possible overrides would make every path leading
                 // here look uninteresting and be pruned. Flag the call site itself so those
                 // paths survive.
-                if (mayHideApplicationCode(dispatch)) {
+                if (getInvokeExpr(stmt).get() instanceof JDynamicInvokeExpr indy
+                        && CallbackTargets.lambdaTargets(indy, view).isPresent()) {
+                    // String concatenation, or the creation of a lambda or method reference: the
+                    // call itself runs no application code. What library code calls back (a
+                    // toString(), the lambda when a library runs it) is a callback, covered as for
+                    // any library call (CallbackTargets); a lambda the application calls is
+                    // dispatched to where it is called (ReceiverTypeResolver).
+                    addLibraryCallSite(calleeOrNull(stmt), callSiteId);
+                } else if (mayHideApplicationCode(dispatch)) {
                     logger.info("Unresolved dispatch at '{}' in {}: {} possible target(s); "
                             + "marking call site as incomplete",
                             stmt, methodSig, dispatch.getTargets().size());
