@@ -81,6 +81,35 @@ extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. Th
 follows them; after such an exception SWAT stops trusting the graph until it finds it again at a
 later branch by key (resync, see the branch keys below).
 
+## Property pre-check (`staticcheck`)
+
+`de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck` is a separate entry point: a conservative ASM pass
+over the whole task classpath, from `Main.main`, that proves or fails to prove `exception_free`
+(no-runtime-exception) and `assertion_free` (valid-assert). It builds no SootUp view (about 0.2 s
+instead of the extractor's 5 s start-up) and does not use the graph. It moved here from SWAT's
+executor (issue SWAT-project/SWAT#93).
+
+```bash
+./gradlew precheckJar     # build/libs/cfg-extractor-precheck.jar: staticcheck and ASM only
+java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck <classpath...>
+```
+
+- **Output:** one JSON line: `tool`, `version` (git describe at build time), `exception_free`,
+  `reason`, `assertion_free`, `assertion_reason`. SWAT reads it in `svcomp/PropertyPreCheck.py`;
+  keep the fields stable.
+- **A proof is a SAFE verdict without exploring, and skips all of SWAT's downgrades,** so a wrong
+  proof is a false SAFE. Everything the check cannot prove must stay "not proven": closed world
+  (application code, the modelled `Verifier`, `JdkModel`'s whitelist), no reflection or
+  `invokedynamic` beyond string concatenation, platform-package classes on the classpath fail.
+  Do not port it onto SootUp (dispatch, exceptional flow and local types are too loose for a proof).
+- **Tests:** `./gradlew test` runs `ExceptionFreedomCheckSpec` (Spock): the counterexamples from
+  the adversarial reviews, which must never be proven. Add every new counterexample there.
+- **Release gate:** `scripts/precheck_gate.py --jar build/libs/cfg-extractor-precheck.jar` runs it
+  over sv-benchmarks and fails on any proof that contradicts an expected verdict. It must pass
+  with 0 contradictions before a release.
+- **Releases:** SWAT ships the jar in its SV-COMP archive, built in CI at the tag named in
+  `SWAT/cfg-extraction.ref`. To release: pass the gate, tag, push the tag, then move the ref.
+
 ## SootUp traps
 
 - **No body interceptors.** The view is built with `List.of()` on purpose. Interceptors reshape
