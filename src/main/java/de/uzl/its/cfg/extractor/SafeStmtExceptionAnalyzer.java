@@ -24,7 +24,7 @@ import java.util.Set;
 
 /**
  * Wrapper around SootUp's {@link StmtExceptionAnalyzer} that works around an upstream NPE, and
- * around its failure on a throw of a local not typed as a class (see {@link #mightThrow}).
+ * around its failure on a throw of a local not typed as a known class (see {@link #mightThrow}).
  *
  * <p>SootUp 3.0.1 (latest release; still unfixed on upstream {@code develop}) only initialises
  * the {@code result} field of {@code ExceptionInferExprVisitor} in {@code caseNewArrayExpr()}
@@ -62,18 +62,23 @@ public class SafeStmtExceptionAnalyzer {
 
     private final StmtExceptionAnalyzer delegate;
 
+    private final TypeHierarchy hierarchy;
+
     public SafeStmtExceptionAnalyzer(TypeHierarchy hierarchy) {
+        this.hierarchy = hierarchy;
         this.delegate = new StmtExceptionAnalyzer(hierarchy);
     }
 
     /** Exceptions {@code stmt} might throw, computed without tripping over the SootUp bugs. */
     public Set<ClassType> mightThrow(Stmt stmt, ControlFlowGraph<? extends BasicBlock<?>> graph) {
-        if (stmt instanceof JThrowStmt throwStmt && !(throwStmt.getOp().getType() instanceof ClassType)) {
-            // The thrown local is not typed as a class: without the type-assigning body
-            // interceptor, a local keeps the type the LocalVariableTable gives its slot, which can
-            // be another variable's (gson's ISO8601Utils throws a local named "month", an int).
-            // SootUp then fails. What is thrown is resolved where the throw is wired up (emitThrow);
-            // here it may be anything, so every handler of the statement stays reachable.
+        if (stmt instanceof JThrowStmt throwStmt
+                && !(throwStmt.getOp().getType() instanceof ClassType thrown && hierarchy.contains(thrown))) {
+            // The thrown local is not typed as a class SootUp knows, and SootUp then fails: without
+            // the type-assigning body interceptor, a local keeps the type the LocalVariableTable
+            // gives its slot, which can be another variable's (gson's ISO8601Utils throws a local
+            // named "month", an int), or a class that is not on the classpath (spatial4j's optional
+            // JTS types). What is thrown is resolved where the throw is wired up (emitThrow); here it
+            // may be anything, so every handler of the statement stays reachable.
             return UNKNOWN_THROW_EXCEPTIONS;
         }
         JNewArrayExpr newArray = brokenNewArrayExpr(stmt);
