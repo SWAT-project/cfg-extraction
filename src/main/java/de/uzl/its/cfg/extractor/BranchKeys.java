@@ -206,7 +206,7 @@ final class BranchKeys {
                     signature = c.getValue();
                 }
             }
-            events.add(new GraphEvent(new Event(line, "call:" + nameAndDescriptor(invoke.getMethodSignature()), signature),
+            events.add(new GraphEvent(new Event(line, callKind(invoke.getMethodSignature()), signature),
                     List.of(nodeId), List.of("")));
         }
     }
@@ -235,6 +235,18 @@ final class BranchKeys {
             case ARRAY_SIZE -> "newarr";
             case DIVISION_BY_ZERO -> "div";
         };
+    }
+
+    /**
+     * SWAT's executor runs {@code Verifier.nondetObject(type, factory)} as the call
+     * {@code factory.createObject()} (its SVCompMethodAdapter rewrites the instruction), and keys it
+     * as that call.
+     */
+    private static final String NONDET_OBJECT_KIND = "call:createObject()Ljava/lang/Object;";
+
+    /** The kind of a call site, as the executor names it. */
+    private static String callKind(MethodSignature callee) {
+        return ReceiverTypeResolver.isNondetObject(callee) ? NONDET_OBJECT_KIND : "call:" + nameAndDescriptor(callee);
     }
 
     static String nameAndDescriptor(MethodSignature signature) {
@@ -337,6 +349,10 @@ final class BranchKeys {
             return "newarr";
         }
         if (insn instanceof MethodInsnNode m) {
+            if (m.name.equals("nondetObject") && m.owner.equals(ReceiverTypeResolver.VERIFIER.replace('.', '/'))
+                    && m.desc.equals("(Ljava/lang/Class;L" + ReceiverTypeResolver.OBJECT_FACTORY.replace('.', '/') + ";)Ljava/lang/Object;")) {
+                return NONDET_OBJECT_KIND;
+            }
             return "call:" + m.name + m.desc;
         }
         if (insn instanceof InvokeDynamicInsnNode d) {

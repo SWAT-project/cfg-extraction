@@ -267,6 +267,19 @@ public class ReceiverTypeResolver {
     private Dispatch resolve(SootMethod caller, AbstractInvokeExpr invoke, Set<Object> visiting) {
         MethodSignature declared = invoke.getMethodSignature();
 
+        if (isNondetObject(declared)) {
+            // SWAT rewrites Verifier.nondetObject(type, factory) into factory.createObject() (see
+            // its SVCompMethodAdapter), so the call runs the factory, dispatched on the argument.
+            ClassType factory = view.getIdentifierFactory().getClassType(OBJECT_FACTORY);
+            MethodSignature createObject = view.getIdentifierFactory().getMethodSignature(factory, "createObject",
+                    view.getIdentifierFactory().getClassType("java.lang.Object"), List.of());
+            Value arg = invoke.getArg(1);
+            if (!(arg instanceof Local)) {
+                return new Dispatch(Set.of(), Precision.NONE); // a null factory: the call throws
+            }
+            return dispatchOn(caller, (Local) arg, createObject, visiting);
+        }
+
         // staticinvoke and specialinvoke (constructors, super calls, private methods) name their
         // target outright -- there is no dynamic dispatch to resolve.
         if (invoke instanceof JStaticInvokeExpr || invoke instanceof JSpecialInvokeExpr) {
@@ -280,9 +293,22 @@ public class ReceiverTypeResolver {
         }
 
         // we should now be left with an invokevirtual or an invokeinterface
+        return dispatchOn(caller, ((AbstractInstanceInvokeExpr) invoke).getBase(), declared, visiting);
+    }
 
+    static final String VERIFIER = "org.sosy_lab.sv_benchmarks.Verifier";
+    static final String OBJECT_FACTORY = "org.sosy_lab.sv_benchmarks.ObjectFactory";
+
+    /** SV-COMP's {@code Verifier.nondetObject(Class, ObjectFactory)}, which SWAT runs as the factory's {@code createObject()}. */
+    static boolean isNondetObject(MethodSignature sig) {
+        return sig.getName().equals("nondetObject") && sig.getDeclClassType().getFullyQualifiedName().equals(VERIFIER)
+                && sig.getParameterTypes().size() == 2
+                && sig.getParameterTypes().get(1).toString().equals(OBJECT_FACTORY);
+    }
+
+    /** Dispatch of {@code declared} (an instance method) on {@code receiver}. */
+    private Dispatch dispatchOn(SootMethod caller, Local receiver, MethodSignature declared, Set<Object> visiting) {
         ClassType declaredType = declared.getDeclClassType();
-        Local receiver = ((AbstractInstanceInvokeExpr) invoke).getBase();
         Optional<Set<ClassType>> receiverTypes = typesOf(caller, receiver, declaredType, visiting);
 
         Set<ClassType> candidates;

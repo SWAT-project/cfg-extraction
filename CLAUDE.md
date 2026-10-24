@@ -71,6 +71,10 @@ because they are easy to test. Later targets include shell calls, SQL statement 
 uncaught exceptions, so keep target detection separate from the graph construction and avoid
 designs that only work for `AssertionError`.
 
+`Verifier.nondetObject(type, factory)` is not a leaf: SWAT runs it as `factory.createObject()`, so
+`ReceiverTypeResolver` dispatches it on the factory argument and `BranchKeys` keys it as
+`call:createObject()Ljava/lang/Object;`, as the executor reports it.
+
 Library calls are leaf calls, but if an application method library code may call back (an
 override of a library method, a lambda) can reach an assert, every library call counts as an
 assertion point (`CallbackTargets`; off with `--no-callback-targets`). A call site with several
