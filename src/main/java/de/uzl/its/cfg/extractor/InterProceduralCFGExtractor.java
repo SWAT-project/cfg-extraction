@@ -101,6 +101,26 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         // logger.info("Call graph built successfully");
     }
 
+    /**
+     * The target points for SV-COMP's no-runtime-exception property, where a RuntimeException may
+     * arise or leave a method: every statement that may raise one itself (cannotRaise false, see
+     * RaiseSites), and every uncaught[T] node of a RuntimeException type T, where a phantom guard's
+     * failure (or a throw) leaves its method. Over-approximated: an exception a caller catches
+     * still counts. A library call that may call back into the application is itself such a
+     * statement unless the pre-check rules out both a callback and an exception, so callbacks need
+     * no extra points; incomplete nodes count as target points for every property (SAGraph).
+     */
+    private static List<String> runtimeExceptionPoints(ControlFlowGraph cfg) {
+        List<String> points = new ArrayList<>();
+        for (CFGNode node : cfg.getNodes()) {
+            if (Boolean.FALSE.equals(node.getCannotRaise())
+                    || (node.getExceptionTypeChain() != null && node.getExceptionTypeChain().contains("java.lang.RuntimeException"))) {
+                points.add(node.getId());
+            }
+        }
+        return points;
+    }
+
     @Override
     public ControlFlowGraph extractCFG(SootMethod method, JavaView view) {
         logger.info("Extracting inter-procedural CFG starting from: {}", method.getSignature());
@@ -135,6 +155,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         }
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
+        combinedCFG.addMetadata("runtimeExceptionPointIds", runtimeExceptionPoints(combinedCFG));
         if (siteFacts != null) {
             combinedCFG.addMetadata("siteFacts", siteFacts.world);
             combinedCFG.addMetadata("raiseSites", intraExtractor.raiseStats.asMap());

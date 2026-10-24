@@ -206,7 +206,14 @@ cannot raise a RuntimeException, and `RaiseSites` puts that on the nodes as `can
 Other nodes have no `cannotRaise`. `metadata.siteFacts` says which facts were used: `closed` (the
 check's facts for the methods reachable from `main`, which hold because the world is closed) or
 `local` (what each method shows itself); `metadata.raiseSites` counts the marked nodes.
-`--no-site-facts` leaves all of it out.
+`--no-site-facts` leaves the facts out (every statement site then gets `false`).
+
+`metadata.runtimeExceptionPointIds` are the target points for SV-COMP's no-runtime-exception
+property, as `metadata.assertionPointIds` are for valid-assert: every statement site with
+`"cannotRaise": false`, and every `uncaught[T]` node of a RuntimeException type (where a guard's
+failure or a throw leaves its method). An exception a caller catches still counts. A library call
+that may call back into the application is such a site unless the pre-check rules out both a
+callback and an exception, so callbacks need no extra points.
 
 ## Example Output
 

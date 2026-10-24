@@ -227,9 +227,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 cfg.getNodes().size(), cfg.getEdges().size());
 
         BranchKeys.annotate(method, view, stmtGraph, stmtToId, entryIds, cfg);
-        if (siteFacts != null) {
-            RaiseSites.annotate(method, stmtGraph.getStmts(), stmtToId, cfg, siteFacts, raiseStats);
-        }
+        RaiseSites.annotate(method, stmtGraph.getStmts(), stmtToId, cfg, siteFacts, raiseStats);
 
         return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap(), escapes.pseudoMap());
     }

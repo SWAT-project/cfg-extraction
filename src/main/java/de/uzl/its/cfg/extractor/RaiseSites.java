@@ -54,6 +54,7 @@ final class RaiseSites {
 
     static void annotate(SootMethod method, Collection<Stmt> stmts, Map<Stmt, String> stmtToId, ControlFlowGraph cfg,
             SiteFacts facts, Stats stats) {
+        // Without facts (--no-site-facts) every site may raise.
         String methodKey = method.getDeclaringClassType().getFullyQualifiedName().replace('.', '/') + "."
                 + method.getName() + IntraProceduralCFGExtractor.jvmDescriptor(method);
 
@@ -66,7 +67,7 @@ final class RaiseSites {
             if (hash >= 0) {
                 key = key.substring(0, hash); // a dimension of a multi-dimensional allocation
             }
-            if (facts.guardIsSafe(key)) {
+            if (facts != null && facts.guardIsSafe(key)) {
                 node.setCannotRaise(true);
                 stats.safeGuards++;
             }
@@ -84,7 +85,7 @@ final class RaiseSites {
         }
         for (Map.Entry<Stmt, List<String>> e : kindsOf.entrySet()) {
             int line = PhantomGuardEmitter.lineNumberOf(e.getKey());
-            boolean matched = sorted(graphKinds.get(line)).equals(sorted(facts.sitesOn(methodKey, line)));
+            boolean matched = facts != null && sorted(graphKinds.get(line)).equals(sorted(facts.sitesOn(methodKey, line)));
             boolean safe = matched && e.getValue().stream().allMatch(k -> facts.siteIsSafe(methodKey, line, k));
             stats.sites++;
             stats.matched += matched ? 1 : 0;
