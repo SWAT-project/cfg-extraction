@@ -102,8 +102,14 @@ java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.Except
   (application code, the modelled `Verifier`, `JdkModel`'s whitelist), no reflection or
   `invokedynamic` beyond string concatenation, platform-package classes on the classpath fail.
   Do not port it onto SootUp (dispatch, exceptional flow and local types are too loose for a proof).
+- **Site facts:** `ExceptionFreedomCheck.siteFacts` (`--sites` on the command line) says per
+  instruction whether it can raise a RuntimeException, for the graph (`SiteFacts`): guards by
+  their exact branch key, statement sites by method, line and kind. Under a closed world the
+  methods reachable from `Main.main` use the check's facts; everything else only what the method
+  shows itself, which holds in any world. A site wrongly named safe lets SWAT prune a violation.
 - **Tests:** `./gradlew test` runs `ExceptionFreedomCheckSpec` (Spock): the counterexamples from
   the adversarial reviews, which must never be proven. Add every new counterexample there.
+  `SiteFactsSpec` covers the site facts.
 - **Release gate:** `scripts/precheck_gate.py --jar build/libs/cfg-extractor-precheck.jar` runs it
   over sv-benchmarks and fails on any proof that contradicts an expected verdict. It must pass
   with 0 contradictions before a release.

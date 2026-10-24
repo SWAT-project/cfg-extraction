@@ -77,6 +77,9 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
     private final Set<AbstractInsnNode> unknownTargets = Collections.newSetFromMap(new IdentityHashMap<>());
     private Program.Method entry;
     private boolean changed;
+    /** Set by run() once the closed world is established: its facts then hold on every execution. */
+    private boolean closedWorld;
+    private Set<Program.Method> reachableMethods = Set.of();
 
     ExceptionFreedomCheck(Program program) {
         this.program = program;
@@ -150,6 +153,8 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
         Set<Program.Method> reachable = new LinkedHashSet<>();
         String open = openWorldCall(roots, reachable);
         if (open != null) return Result.neither(open);
+        closedWorld = true;
+        reachableMethods = reachable;
         String assertion = assertionCreation(reachable);
         boolean assertionFree = assertion == null;
         if (assertionFree) assertion = "no AssertionError is created in code reachable from Main.main or a static initializer";
@@ -870,6 +875,24 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
     }
 
     private String call(MethodInsnNode mi, Frame<AbsValue> f, Map<String, String> mayThrow) {
+        String local = callSite(mi, f);
+        if (local != null) return local;
+        if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) return null;
+        Type[] args = Type.getArgumentTypes(mi.desc);
+        AbsValue receiver = mi.getOpcode() == INVOKESTATIC ? null : top(f, args.length);
+        if (receiver != null && receiver.isBottom()) return null;
+        for (Program.Method target : targets(mi).methods) {
+            if (mayThrow.containsKey(target.key)) return "call to " + target.key;
+        }
+        return null;
+    }
+
+    /**
+     * Why the call instruction itself may raise a RuntimeException (null if it cannot): a receiver
+     * that may be null, or a library callee whose model does not rule one out. What the application
+     * methods it calls may throw is left out: those are sites of their own.
+     */
+    private String callSite(MethodInsnNode mi, Frame<AbsValue> f) {
         String open = openWorldReason(mi, f);
         if (open != null) return open;
         if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) return null;
@@ -889,20 +912,105 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
                     return "library call with an argument that may be null: " + lib;
             }
         }
-        for (Program.Method target : t.methods) {
-            if (mayThrow.containsKey(target.key)) return "call to " + target.key;
-        }
         return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Site facts (for the static pre-analysis graph)
+
+    /**
+     * Per instruction that may raise a RuntimeException, whether it can (see {@link SiteFacts}).
+     * Under a closed world, the methods reachable from Main.main use the check's facts; every other
+     * method, and every method if the world is not closed, only what the method itself shows
+     * (fields, parameters and call results are any value of their type), which holds in any world.
+     */
+    public static SiteFacts siteFacts(List<Path> classpath) {
+        Program program;
+        try {
+            program = new Program(classpath);
+        } catch (Exception | StackOverflowError e) {
+            return SiteFacts.none("cannot read the classpath: " + e);
+        }
+        ExceptionFreedomCheck check = new ExceptionFreedomCheck(program);
+        try {
+            check.run();
+        } catch (Exception | StackOverflowError e) {
+            check.closedWorld = false;
+        }
+        return check.collectSiteFacts();
+    }
+
+    private SiteFacts collectSiteFacts() {
+        SiteFacts out = new SiteFacts(closedWorld ? "closed" : "local");
+        for (Program.Method m : program.methods()) {
+            if (!m.hasCode()) continue;
+            Frame<AbsValue>[] f = closedWorld && reachableMethods.contains(m) ? frames.get(m.key) : null;
+            try {
+                if (f == null) f = new Analyzer<>(new FactInterpreter(UNKNOWN_FACTS, m)).analyze(m.owner.name, m.node);
+            } catch (AnalyzerException | RuntimeException e) {
+                continue; // no facts: none of its sites is safe
+            }
+            Map<String, Integer> ordinals = new HashMap<>();
+            int line = -1;
+            AbstractInsnNode[] insns = m.node.instructions.toArray();
+            for (int i = 0; i < insns.length; i++) {
+                if (insns[i] instanceof LineNumberNode) {
+                    line = ((LineNumberNode) insns[i]).line;
+                    continue;
+                }
+                String guard = SiteFacts.guardKind(insns[i]);
+                String site = SiteFacts.siteKind(insns[i]);
+                if (guard == null && site == null) continue;
+                // An instruction without a frame is unreachable: it never raises.
+                boolean safe = f[i] == null || siteRaises(m, insns[i], f[i]) == null;
+                if (guard != null) {
+                    int ordinal = ordinals.merge(line + "|" + guard, 1, Integer::sum) - 1;
+                    if (safe) out.addSafeGuard(m.key + "|" + line + "|" + guard + "|" + ordinal);
+                }
+                if (site != null) out.addSite(m.key, line, site, safe);
+            }
+        }
+        return out;
+    }
+
+    /** Why the instruction itself may raise a RuntimeException, or null if it cannot. */
+    private String siteRaises(Program.Method m, AbstractInsnNode insn, Frame<AbsValue> f) {
+        int op = insn.getOpcode();
+        switch (op) {
+            case ATHROW: {
+                AbsValue v = top(f, 0);
+                if (v.isBottom() || (v.exactType != null && isNeverRuntimeException(v.exactType))) return null;
+                return "throw of a value that may be a RuntimeException";
+            }
+            case INVOKEDYNAMIC:
+                // Even string concatenation: it may call toString() of an argument.
+                return "invokedynamic";
+            case INVOKEVIRTUAL: case INVOKESPECIAL: case INVOKESTATIC: case INVOKEINTERFACE: {
+                MethodInsnNode mi = (MethodInsnNode) insn;
+                Type[] args = Type.getArgumentTypes(mi.desc);
+                if (op != INVOKESTATIC && top(f, args.length).isBottom()) return null;
+                return callSite(mi, f);
+            }
+            default:
+                return raises(m, insn, f, Map.of(), new boolean[m.node.tryCatchBlocks.size()]);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Command line: the classpath entries of the program. Prints one JSON object with the result.
+     * Command line: the classpath entries of the program. Prints one JSON object with the result;
+     * with {@code --sites} first, the site facts instead ({@link SiteFacts#toJson}).
      */
     public static void main(String[] args) {
+        boolean sites = args.length > 0 && args[0].equals("--sites");
         List<Path> cp = new ArrayList<>();
-        for (String a : args) for (String p : a.split(java.io.File.pathSeparator)) if (!p.isEmpty()) cp.add(Path.of(p));
+        for (String a : sites ? Arrays.copyOfRange(args, 1, args.length) : args)
+            for (String p : a.split(java.io.File.pathSeparator)) if (!p.isEmpty()) cp.add(Path.of(p));
+        if (sites) {
+            System.out.println(siteFacts(cp).toJson());
+            return;
+        }
         Result r = check(cp);
         System.out.println("{\"tool\": \"cfg-extraction\", \"version\": \"" + escape(version())
                 + "\", \"exception_free\": " + r.exceptionFree + ", \"reason\": \"" + escape(r.reason)
