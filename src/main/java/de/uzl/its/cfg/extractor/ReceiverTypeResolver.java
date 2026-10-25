@@ -616,12 +616,18 @@ public class ReceiverTypeResolver {
      *
      * <p>The cast is a filter, not a source of information: the operand's inferred types are
      * narrowed to those the cast admits. A cast whose operand is unknown stays unknown -- the
-     * cast type is an upper bound, not the runtime type.
+     * cast type is an upper bound, not the runtime type -- unless the cast type is an application
+     * type that no lambda implements: then its subtypes, all application classes, are the
+     * possible runtime types (as for {@code this}, see {@link #typesOfThis}).
      */
     private Optional<Set<ClassType>> typesOfCast(SootMethod method, JCastExpr cast, ClassType bound,
             Set<Object> visiting) {
         Optional<Set<ClassType>> operandTypes = typesOf(method, cast.getOp(), bound, visiting);
         if (operandTypes.isEmpty()) {
+            if (cast.getType() instanceof ClassType castType && isApplicationType(castType)
+                    && !mayBeLambda(castType)) {
+                return Optional.of(possibleTypesBelow(castType));
+            }
             return Optional.empty();
         }
         Type castType = cast.getType();
