@@ -54,6 +54,63 @@ public class CFGNode {
      */
     private Boolean cannotRaise;
 
+    /**
+     * Data-flow facts for SWAT's relevance analysis (see DataflowFacts), or null where there are
+     * none. Locations are strings: {@code l:<local>}, {@code p:<n>} / {@code p:this} (a parameter),
+     * {@code ret} (the method's return value) are local to the node's method; {@code f:<name>:<type>}
+     * (a field, static or not), {@code a:<element kind>} (array elements), {@code g:...} (global
+     * state: input, library heap, output, the exception in flight) and {@code *} (anything) are
+     * global.
+     *
+     * <ul>
+     *   <li>{@code dataflow}: pairs {@code [written, read]}: each written location may afterwards
+     *       hold a value computed from the read ones;</li>
+     *   <li>{@code control}: what the node's control decision reads (a branch condition, a switch
+     *       key, the operands of a phantom guard, an assumption);</li>
+     *   <li>{@code terminates}: the node may end the program normally ({@code System.exit},
+     *       {@code Runtime.halt}, {@code Verifier.assume});</li>
+     *   <li>{@code call}: for a call site expanded into application code, what each argument reads
+     *       ({@code args}), what the receiver reads ({@code base}) and the local the result goes
+     *       to ({@code result}); SWAT links them to the callee's parameters and return value.</li>
+     * </ul>
+     */
+    private List<List<List<String>>> dataflow;
+    private List<String> control;
+    private Boolean terminates;
+    private java.util.Map<String, Object> call;
+
+    public List<List<List<String>>> getDataflow() {
+        return dataflow;
+    }
+
+    public void setDataflow(List<List<List<String>>> dataflow) {
+        this.dataflow = dataflow;
+    }
+
+    public List<String> getControl() {
+        return control;
+    }
+
+    public void setControl(List<String> control) {
+        this.control = control;
+    }
+
+    public Boolean getTerminates() {
+        return terminates;
+    }
+
+    public void setTerminates(Boolean terminates) {
+        this.terminates = terminates;
+    }
+
+    public java.util.Map<String, Object> getCall() {
+        return call;
+    }
+
+    public void setCall(java.util.Map<String, Object> call) {
+        this.call = call;
+    }
+
     public Boolean getCannotRaise() {
         return cannotRaise;
     }

@@ -119,7 +119,9 @@ public final class PhantomGuardEmitter {
     private static CFGNode createGuardNode(String guardId, Guard guard, Stmt guardedStmt) {
         String statement = "guard[" + guard.kind().getExceptionType().getClassName() + "]: "
                 + conditionOf(guard);
-        return new CFGNode(guardId, statement, "PhantomGuard", lineNumberOf(guardedStmt));
+        CFGNode node = new CFGNode(guardId, statement, "PhantomGuard", lineNumberOf(guardedStmt));
+        node.setControl(DataflowFacts.guardControl(guard.guarded()));
+        return node;
     }
 
     /** The safe condition, mirroring the constraint SWAT builds for this guard. */

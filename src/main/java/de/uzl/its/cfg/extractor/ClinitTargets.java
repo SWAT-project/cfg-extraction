@@ -62,7 +62,7 @@ final class ClinitTargets {
     }
 
     /** The classes {@code stmt} may initialize: by {@code new}, a static call or a static field. */
-    private Set<ClassType> triggeredClasses(Stmt stmt) {
+    static Set<ClassType> triggeredClasses(Stmt stmt) {
         Set<ClassType> classes = new LinkedHashSet<>();
         for (Value value : stmt.getUsesAndDefs()) {
             if (value instanceof JNewExpr) {
@@ -165,6 +165,22 @@ final class ClinitTargets {
         return false;
     }
 
+    /**
+     * The static initializers initializing {@code type} may run: its own and those of its
+     * application supertypes, except {@code entryClass}'s, which has run before main.
+     */
+    java.util.List<SootMethod> initializers(ClassType type, ClassType entryClass) {
+        java.util.List<SootMethod> result = new java.util.ArrayList<>();
+        if (!isApplicationClass(type)) {
+            return result;
+        }
+        Stream.concat(Stream.of(type), supertypes(type))
+                .filter(t -> !t.equals(entryClass))
+                .forEach(t -> view.getClass(t).flatMap(c -> c.getMethodsByName("<clinit>").stream()
+                        .map(m -> (SootMethod) m).findFirst()).ifPresent(result::add));
+        return result;
+    }
+
     private static boolean isAssertionAllocation(Stmt stmt) {
         return stmt.getUsesAndDefs().stream().anyMatch(value -> value instanceof JNewExpr
                 && ((JNewExpr) value).getType().getFullyQualifiedName().equals("java.lang.AssertionError"));
@@ -175,7 +191,7 @@ final class ClinitTargets {
      * in the named class or its superclasses, and every override in an application subtype -- also
      * when the named class is a library class (an application subclass of java.io.PrintWriter).
      */
-    private Set<SootMethod> possibleCallees(MethodSignature sig) {
+    Set<SootMethod> possibleCallees(MethodSignature sig) {
         ClassType declared = sig.getDeclClassType();
         Set<SootMethod> callees = new LinkedHashSet<>();
         Stream.concat(Stream.of(declared), Stream.concat(supertypes(declared), subtypes(declared)))
@@ -205,7 +221,7 @@ final class ClinitTargets {
         return result.stream().filter(this::isApplicationClass).collect(Collectors.toList()).stream();
     }
 
-    private boolean isApplicationClass(ClassType type) {
+    boolean isApplicationClass(ClassType type) {
         return view.getClass(type).map(SootClass::isApplicationClass).orElse(false);
     }
 }

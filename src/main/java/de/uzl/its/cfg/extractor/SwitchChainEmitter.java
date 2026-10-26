@@ -101,7 +101,9 @@ public final class SwitchChainEmitter {
 
     private static CFGNode createCaseNode(String caseId, JSwitchStmt switchStmt, IntConstant value) {
         String statement = "case " + value + ": " + switchStmt.getKey() + " == " + value;
-        return new CFGNode(caseId, statement, "SwitchCase",
+        CFGNode node = new CFGNode(caseId, statement, "SwitchCase",
                 PhantomGuardEmitter.lineNumberOf(switchStmt));
+        node.setControl(DataflowFacts.switchCaseControl(switchStmt));
+        return node;
     }
 }
