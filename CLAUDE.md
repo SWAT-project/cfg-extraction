@@ -91,7 +91,9 @@ later branch by key (resync, see the branch keys below).
 summarization.** Nodes carry data-flow facts (`DataflowFacts`: which abstract locations each
 statement writes and reads, call arguments, terminators such as `System.exit` and
 `Verifier.assume`). SWAT uses them to compute which branches are irrelevant to the targets (a
-static slice) and stops flipping those. Loop summarization is planned on top of it.
+static slice) and stops flipping those. Loop summarization lives in SWAT's executor
+(`symbolic/summary`); it uses the relevance analysis to decide whether a summarized loop's other
+effects can matter (`Relevance.summary_ok`), so it needs these facts too.
 Limitations of the facts: all library state is one location `g:lib` (a finer split, by type
 family or by allocation site with an escape check, belongs in `DataflowFacts`; see SWAT's
 swat-benchmarks/RESULTS.md, relevance "Open"), fields are by name and type (no points-to analysis).
