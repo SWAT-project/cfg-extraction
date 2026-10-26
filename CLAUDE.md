@@ -87,6 +87,12 @@ extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. Th
 follows them; after such an exception SWAT stops trusting the graph until it finds it again at a
 later branch by key (resync, see the branch keys below).
 
+**In progress (branch `niklas/relevance-slicing`, started 2026-10-26): relevance, then loop
+summarization.** Nodes carry data-flow facts (`DataflowFacts`: which abstract locations each
+statement writes and reads, call arguments, terminators such as `System.exit` and
+`Verifier.assume`). SWAT uses them to compute which branches are irrelevant to the targets (a
+static slice) and stops flipping those. Loop summarization is planned on top of it.
+
 ## Property pre-check (`staticcheck`)
 
 `de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck` is a separate entry point: a conservative ASM pass
