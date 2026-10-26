@@ -307,7 +307,7 @@ final class DataflowFacts {
             facts.terminates = true;
             return;
         }
-        if (isReflective(owner) || invoke instanceof JDynamicInvokeExpr && !isPlainIndy((JDynamicInvokeExpr) invoke)) {
+        if (isReflective(owner, name) || invoke instanceof JDynamicInvokeExpr && !isPlainIndy((JDynamicInvokeExpr) invoke)) {
             Set<String> written = new LinkedHashSet<>(resultOnly);
             written.add(ANY);
             Set<String> read = new LinkedHashSet<>(everything);
@@ -383,11 +383,21 @@ final class DataflowFacts {
                 || (owner.equals("java.lang.Runtime") && (name.equals("exit") || name.equals("halt")));
     }
 
-    /** Library code that reads or writes anything: reflection, method handles, Unsafe. */
-    private static boolean isReflective(String owner) {
+    /**
+     * Library code that may read or write anything: reflection, method handles, Unsafe, and what
+     * loads or instantiates a class by name (running code the graph cannot name). Other methods of
+     * {@code Class} only read class metadata ({@code desiredAssertionStatus()}, which every class
+     * with an {@code assert} calls in its static initializer, {@code getName()}).
+     */
+    private static boolean isReflective(String owner, String name) {
+        if (owner.equals("java.lang.Class")) {
+            return name.equals("forName") || name.equals("newInstance");
+        }
+        if (owner.equals("java.lang.ClassLoader")) {
+            return name.startsWith("loadClass") || name.equals("findClass") || name.equals("defineClass");
+        }
         return owner.startsWith("java.lang.reflect.") || owner.startsWith("java.lang.invoke.")
-                || owner.equals("sun.misc.Unsafe") || owner.startsWith("jdk.internal.")
-                || owner.equals("java.lang.Class") || owner.equals("java.lang.ClassLoader");
+                || owner.equals("sun.misc.Unsafe") || owner.startsWith("jdk.internal.");
     }
 
     /** String concatenation and lambda creation, which run no code themselves. */
