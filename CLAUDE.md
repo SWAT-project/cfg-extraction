@@ -92,6 +92,9 @@ summarization.** Nodes carry data-flow facts (`DataflowFacts`: which abstract lo
 statement writes and reads, call arguments, terminators such as `System.exit` and
 `Verifier.assume`). SWAT uses them to compute which branches are irrelevant to the targets (a
 static slice) and stops flipping those. Loop summarization is planned on top of it.
+Limitations of the facts: all library state is one location `g:lib` (a finer split, by type
+family or by allocation site with an escape check, belongs in `DataflowFacts`; see SWAT's
+swat-benchmarks/RESULTS.md, relevance "Open"), fields are by name and type (no points-to analysis).
 
 ## Property pre-check (`staticcheck`)
 
