@@ -86,6 +86,8 @@ task fatJar(type: Jar) {
         attributes 'Main-Class': application.mainClass, 'Implementation-Version': gitVersion()
     }
     from sourceSets.main.output
+    // Dependencies bring their own META-INF/LICENSE files, so ours gets a name of its own.
+    from('LICENSE') { into 'META-INF'; rename { 'LICENSE-cfg-extraction' } }
     from {
         configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
     }
@@ -130,6 +132,7 @@ task precheckJar(type: Jar) {
     }
     from(sourceSets.main.output) { include 'de/uzl/its/cfg/staticcheck/**' }
     from(precheckComponentList)
+    from('LICENSE') { into 'META-INF' }
     from {
         configurations.runtimeClasspath.filter { it.name ==~ /asm(-tree|-analysis)?-[0-9.]+\.jar/ }.collect { zipTree(it) }
     }

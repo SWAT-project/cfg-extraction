@@ -443,7 +443,7 @@ To add new features:
 
 ## License
 
-This project is for educational and research purposes.
+cfg-extraction is released under the MIT License; see [LICENSE](LICENSE).
 
 ## References
 
