@@ -446,7 +446,7 @@ class CFGModel:
             return 'guard'
         if ids & getattr(self, 'call_sites', set()):
             return 'call'
-        if types & {'JIfStmt', 'JSwitchStmt', 'SwitchCase', 'RefEqualityCheck'}:
+        if types & {'JIfStmt', 'JSwitchStmt', 'SwitchCase'}:
             return 'branch'
         return 'plain'
 

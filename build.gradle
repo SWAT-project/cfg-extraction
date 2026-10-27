@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'groovy'
     id 'application'
     id 'maven-publish'
 }
@@ -31,12 +32,35 @@ dependencies {
     // JSON serialization
     implementation 'com.google.code.gson:gson:2.10.1'
 
+    // The property pre-check (staticcheck) reads class files with ASM. SootUp brings the same
+    // version; it is named here because precheckJar bundles it.
+    implementation 'org.ow2.asm:asm:9.10.1'
+    implementation 'org.ow2.asm:asm-tree:9.10.1'
+    implementation 'org.ow2.asm:asm-analysis:9.10.1'
+
     // Logging
     implementation 'org.slf4j:slf4j-api:2.0.9'
     implementation 'org.slf4j:slf4j-simple:2.0.9'
 
     // Testing
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.spockframework:spock-core:2.5-groovy-4.0'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Recorded as Implementation-Version in the jars; the pre-check reports it as "version".
+def gitVersion = {
+    try {
+        def proc = ['git', 'describe', '--tags', '--always', '--dirty'].execute(null, projectDir)
+        proc.waitFor()
+        def v = proc.text.trim()
+        return proc.exitValue() == 0 && v ? v : project.version.toString()
+    } catch (Exception ignored) {
+        return project.version.toString()
+    }
 }
 
 application {
@@ -59,7 +83,7 @@ task fatJar(type: Jar) {
     description = 'Build an executable jar with all dependencies bundled'
     archiveClassifier = 'all'
     manifest {
-        attributes 'Main-Class': application.mainClass
+        attributes 'Main-Class': application.mainClass, 'Implementation-Version': gitVersion()
     }
     from sourceSets.main.output
     from {
@@ -72,6 +96,48 @@ task fatJar(type: Jar) {
 }
 
 build.dependsOn fatJar
+
+// The property pre-check alone: its classes and ASM, without SootUp, for the SV-COMP archive
+// (SWAT runs it as java -cp <jar> de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck <classpath>).
+// META-INF/swat-third-party.json lists the bundled components for SWAT's license file.
+def precheckComponents = layout.buildDirectory.dir('generated/precheck-third-party')
+task precheckComponentList {
+    def classpath = configurations.runtimeClasspath
+    inputs.files(classpath)
+    outputs.dir(precheckComponents)
+    doLast {
+        def entries = classpath.resolvedConfiguration.resolvedArtifacts
+                .findAll { it.moduleVersion.id.group == 'org.ow2.asm' && it.name in ['asm', 'asm-tree', 'asm-analysis'] }
+                .collect { [group: 'org.ow2.asm', name: it.name, version: it.moduleVersion.id.version,
+                            licenses: [[name: 'BSD-3-Clause', url: 'https://asm.ow2.io/license.html']],
+                            url: 'https://asm.ow2.io/'] }
+                .unique { it.name }
+                .sort { it.name }
+        if (entries.size() != 3) throw new GradleException("expected asm, asm-tree and asm-analysis, found ${entries*.name}")
+        def out = precheckComponents.get().file('META-INF/swat-third-party.json').asFile
+        out.parentFile.mkdirs()
+        out.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(entries))
+    }
+}
+
+task precheckJar(type: Jar) {
+    group = 'build'
+    description = 'Build the property pre-check jar (staticcheck and ASM only)'
+    archiveFileName = 'cfg-extractor-precheck.jar'
+    manifest {
+        attributes 'Main-Class': 'de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck',
+                'Implementation-Version': gitVersion()
+    }
+    from(sourceSets.main.output) { include 'de/uzl/its/cfg/staticcheck/**' }
+    from(precheckComponentList)
+    from {
+        configurations.runtimeClasspath.filter { it.name ==~ /asm(-tree|-analysis)?-[0-9.]+\.jar/ }.collect { zipTree(it) }
+    }
+    exclude 'module-info.class', 'META-INF/MANIFEST.MF', 'META-INF/versions/**'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+build.dependsOn precheckJar
 
 // Create output directory
 task createOutputDir {

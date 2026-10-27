@@ -55,6 +55,16 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         this.pseudo = pseudo;
     }
 
+    /** Which sites cannot raise a RuntimeException (see {@link RaiseSites}); null for no facts. */
+    private de.uzl.its.cfg.staticcheck.SiteFacts siteFacts;
+
+    void setSiteFacts(de.uzl.its.cfg.staticcheck.SiteFacts siteFacts) {
+        this.siteFacts = siteFacts;
+    }
+
+    /** What RaiseSites marked so far. */
+    final RaiseSites.Stats raiseStats = new RaiseSites.Stats();
+
     /** Traces thrown values to their type; shared so that its caches outlive a single method. */
     private ReceiverTypeResolver typeResolver;
 
@@ -118,8 +128,10 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // statement's guard chain instead of bypassing it.
         Map<Stmt, String> entryIds =
                 new PhantomGuardEmitter(cfg, stmtGraph, hierarchy, escapes).emit(stmts, stmtToId);
-        // Likewise for the branches SWAT's reference-equality helper adds ahead of every IF_ACMP*.
-        entryIds = new RefEqualityEmitter(cfg).emit(stmts, stmtToId, entryIds);
+        // SWAT rewrites every IF_ACMP* into a call to its helper UtilInstrumented.refEquals, whose
+        // branches depend on the runtime types of the operands. They are not in the graph: SWAT
+        // reports them like callbacks, which the walk holds its place for, so the comparison is
+        // just its own JIfStmt here.
 
         SwitchChainEmitter switchEmitter = new SwitchChainEmitter(cfg);
 
@@ -217,6 +229,7 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
                 cfg.getNodes().size(), cfg.getEdges().size());
 
         BranchKeys.annotate(method, view, stmtGraph, stmtToId, entryIds, cfg);
+        RaiseSites.annotate(method, stmtGraph.getStmts(), stmtToId, cfg, siteFacts, raiseStats);
 
         return new MethodCFG(cfg, stmtToId, entryIds, escapes.asMap(), escapes.pseudoMap());
     }

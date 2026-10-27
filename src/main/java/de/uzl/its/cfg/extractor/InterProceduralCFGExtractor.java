@@ -61,6 +61,14 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         this.callbackTargets = callbackTargets;
     }
 
+    private de.uzl.its.cfg.staticcheck.SiteFacts siteFacts;
+
+    /** Which sites cannot raise a RuntimeException (see RaiseSites); null for no facts. */
+    public void setSiteFacts(de.uzl.its.cfg.staticcheck.SiteFacts siteFacts) {
+        this.siteFacts = siteFacts;
+        intraExtractor.setSiteFacts(siteFacts);
+    }
+
     public InterProceduralCFGExtractor(JavaView view, List<SootMethod> entryPoints) {
         this.receiverTypeResolver = new ReceiverTypeResolver(view);
         this.intraExtractor = new IntraProceduralCFGExtractor(receiverTypeResolver);
@@ -91,6 +99,26 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         // this.callGraph = cga.initialize(entryPointSigs);
         // logger.info("Call graph built successfully");
+    }
+
+    /**
+     * The target points for SV-COMP's no-runtime-exception property, where a RuntimeException may
+     * arise or leave a method: every statement that may raise one itself (cannotRaise false, see
+     * RaiseSites), and every uncaught[T] node of a RuntimeException type T, where a phantom guard's
+     * failure (or a throw) leaves its method. Over-approximated: an exception a caller catches
+     * still counts. A library call that may call back into the application is itself such a
+     * statement unless the pre-check rules out both a callback and an exception, so callbacks need
+     * no extra points; incomplete nodes count as target points for every property (SAGraph).
+     */
+    private static List<String> runtimeExceptionPoints(ControlFlowGraph cfg) {
+        List<String> points = new ArrayList<>();
+        for (CFGNode node : cfg.getNodes()) {
+            if (Boolean.FALSE.equals(node.getCannotRaise())
+                    || (node.getExceptionTypeChain() != null && node.getExceptionTypeChain().contains("java.lang.RuntimeException"))) {
+                points.add(node.getId());
+            }
+        }
+        return points;
     }
 
     @Override
@@ -127,6 +155,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         }
 
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
+        combinedCFG.addMetadata("runtimeExceptionPointIds", runtimeExceptionPoints(combinedCFG));
+        if (siteFacts != null) {
+            combinedCFG.addMetadata("siteFacts", siteFacts.world);
+            combinedCFG.addMetadata("raiseSites", intraExtractor.raiseStats.asMap());
+        }
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
         // Derived rather than written during the walk: a default assigned here would overwrite
         // whatever the walk found, and one assigned before the walk would have to be kept in
@@ -182,6 +215,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             newNode.setIncomplete(node.isIncomplete());
             newNode.setException(node.getExceptionType(), node.getExceptionTypeChain());
             newNode.setKey(node.getKey());
+            newNode.setCannotRaise(node.getCannotRaise());
             combinedCFG.addNode(newNode);
         }
 

@@ -147,12 +147,15 @@ same handler rule the walk uses (`ExceptionHandlers`), so the two cannot disagre
 
 SWAT's `RefEqualityTransformer` rewrites every `IF_ACMPEQ` / `IF_ACMPNE` into a call to
 `UtilInstrumented.refEquals(a, b)` plus an `IFNE` / `IFEQ` on its result. `UtilInstrumented` is
-instrumented, so the helper reports one branch (`!shouldUseValueEquality(a, b)`) and, when that is
-taken, a second (`a != b`) before the rewritten comparison reports its own. `RefEqualityEmitter`
-puts the same two branches ahead of every reference `==` / `!=` as `RefEqualityCheck` nodes.
-Null checks compile to `IFNULL` / `IFNONNULL` and are left alone. Without these nodes the walk falls
-two events behind at every reference comparison; this was first observed on
-`MinePump/spec1-5_product1` as a false SAFE.
+instrumented, so the helper reports branches of its own before the rewritten comparison reports
+its branch. How many depends on the runtime types of `a` and `b` (strings and cached boxes are
+compared by value), so the graph cannot spell them out. SWAT flags them like callbacks instead
+(`ShadowContext.inSwatHelper` in the executor), and the walk holds its place while they run. The
+graph has only the comparison's own `JIfStmt`, with the key of the original `IF_ACMP*` (the
+rewritten jump is an `if` at the same position). Null checks compile to `IFNULL` / `IFNONNULL` and
+are left alone. (Until 2026-10 the graph had the helper's then fixed two branches as
+`RefEqualityCheck` nodes; when the helper changed, every reference comparison put the walk out of
+step.)
 
 ### 6. Node Metadata
 
@@ -189,6 +192,31 @@ allocation `#<n>`. SWAT's executor reports the same key for each branch, with th
 pushed since the previous one, and SWAT checks its walk against them and resynchronises by them.
 Where the extractor cannot prove the ordinal (same-kind instructions on a line that it cannot tell
 apart, see `BranchKeys`), it writes `*`; where its view of a line differs from the bytecode, no key.
+
+### 9. Sites That Cannot Raise
+
+The property pre-check's value analysis (`staticcheck`, see `CLAUDE.md`) says which instructions
+cannot raise a RuntimeException, and `RaiseSites` puts that on the nodes as `cannotRaise`:
+
+* a phantom guard gets `"cannotRaise": true` if the instruction with its exact branch key cannot
+  raise (array access in bounds, division by a non-zero value, non-negative array size);
+* a statement that may raise one itself (array access, `arraylength`, instance field access,
+  reference cast, `throw`, monitors, calls) gets `true` or `false`, matched by method, line and
+  kind. A line is only matched if its kinds are the same in the graph and in the bytecode; an
+  unmatched statement gets `false`. For a call, only the call itself counts (a null receiver, a
+  library callee); what an application callee throws is in its own statements.
+
+Other nodes have no `cannotRaise`. `metadata.siteFacts` says which facts were used: `closed` (the
+check's facts for the methods reachable from `main`, which hold because the world is closed) or
+`local` (what each method shows itself); `metadata.raiseSites` counts the marked nodes.
+`--no-site-facts` leaves the facts out (every statement site then gets `false`).
+
+`metadata.runtimeExceptionPointIds` are the target points for SV-COMP's no-runtime-exception
+property, as `metadata.assertionPointIds` are for valid-assert: every statement site with
+`"cannotRaise": false`, and every `uncaught[T]` node of a RuntimeException type (where a guard's
+failure or a throw leaves its method). An exception a caller catches still counts. A library call
+that may call back into the application is such a site unless the pre-check rules out both a
+callback and an exception, so callbacks need no extra points.
 
 ## Example Output
 

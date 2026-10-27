@@ -55,8 +55,10 @@ So every change to the branch structure must match what SWAT's executor actually
 - one event per switch case tested;
 - implicit guards: integer division, array access, array allocation;
 - SWAT's reference-equality rewrite: every `IF_ACMPEQ`/`IF_ACMPNE` becomes a call to the
-  instrumented helper `UtilInstrumented.refEquals`, which emits extra branches before the
-  comparison's own.
+  instrumented helper `UtilInstrumented.refEquals` and a jump on its result. The helper's branches
+  depend on the operands' runtime types, so they are not in the graph: SWAT flags them like
+  callbacks (`ShadowContext.inSwatHelper`) and the walk holds its place. The comparison is its own
+  `if` (same kind and ordinal as the original `IF_ACMP*`).
 
 Concrete (non-symbolic) branches count too. Invokes, returns, `goto` and `athrow` do not.
 
@@ -69,6 +71,10 @@ because they are easy to test. Later targets include shell calls, SQL statement 
 uncaught exceptions, so keep target detection separate from the graph construction and avoid
 designs that only work for `AssertionError`.
 
+`Verifier.nondetObject(type, factory)` is not a leaf: SWAT runs it as `factory.createObject()`, so
+`ReceiverTypeResolver` dispatches it on the factory argument and `BranchKeys` keys it as
+`call:createObject()Ljava/lang/Object;`, as the executor reports it.
+
 Library calls are leaf calls, but if an application method library code may call back (an
 override of a library method, a lambda) can reach an assert, every library call counts as an
 assertion point (`CallbackTargets`; off with `--no-callback-targets`). A call site with several
@@ -80,6 +86,41 @@ Errors) are modelled as pseudo exception types (`PseudoExceptions`, see `INTER_P
 extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. The walk never
 follows them; after such an exception SWAT stops trusting the graph until it finds it again at a
 later branch by key (resync, see the branch keys below).
+
+## Property pre-check (`staticcheck`)
+
+`de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck` is a separate entry point: a conservative ASM pass
+over the whole task classpath, from `Main.main`, that proves or fails to prove `exception_free`
+(no-runtime-exception) and `assertion_free` (valid-assert). It builds no SootUp view (about 0.2 s
+instead of the extractor's 5 s start-up) and does not use the graph. It moved here from SWAT's
+executor (issue SWAT-project/SWAT#93).
+
+```bash
+./gradlew precheckJar     # build/libs/cfg-extractor-precheck.jar: staticcheck and ASM only
+java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck <classpath...>
+```
+
+- **Output:** one JSON line: `tool`, `version` (git describe at build time), `exception_free`,
+  `reason`, `assertion_free`, `assertion_reason`. SWAT reads it in `svcomp/PropertyPreCheck.py`;
+  keep the fields stable.
+- **A proof is a SAFE verdict without exploring, and skips all of SWAT's downgrades,** so a wrong
+  proof is a false SAFE. Everything the check cannot prove must stay "not proven": closed world
+  (application code, the modelled `Verifier`, `JdkModel`'s whitelist), no reflection or
+  `invokedynamic` beyond string concatenation, platform-package classes on the classpath fail.
+  Do not port it onto SootUp (dispatch, exceptional flow and local types are too loose for a proof).
+- **Site facts:** `ExceptionFreedomCheck.siteFacts` (`--sites` on the command line) says per
+  instruction whether it can raise a RuntimeException, for the graph (`SiteFacts`): guards by
+  their exact branch key, statement sites by method, line and kind. Under a closed world the
+  methods reachable from `Main.main` use the check's facts; everything else only what the method
+  shows itself, which holds in any world. A site wrongly named safe lets SWAT prune a violation.
+- **Tests:** `./gradlew test` runs `ExceptionFreedomCheckSpec` (Spock): the counterexamples from
+  the adversarial reviews, which must never be proven. Add every new counterexample there.
+  `SiteFactsSpec` covers the site facts.
+- **Release gate:** `scripts/precheck_gate.py --jar build/libs/cfg-extractor-precheck.jar` runs it
+  over sv-benchmarks and fails on any proof that contradicts an expected verdict. It must pass
+  with 0 contradictions before a release.
+- **Releases:** SWAT ships the jar in its SV-COMP archive, built in CI at the tag named in
+  `SWAT/cfg-extraction.ref`. To release: pass the gate, tag, push the tag, then move the ref.
 
 ## SootUp traps
 

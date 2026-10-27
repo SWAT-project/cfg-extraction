@@ -47,6 +47,21 @@ public class CFGNode {
     /** For a branch or a call site, its key as SWAT's executor reports it (see BranchKeys); else null. */
     private String key;
 
+    /**
+     * Whether the node cannot raise a RuntimeException, by the property pre-check's value analysis
+     * (see RaiseSites): true or false for a statement that may raise one itself, true for a
+     * phantom guard that cannot (unset if it may); null for every other node.
+     */
+    private Boolean cannotRaise;
+
+    public Boolean getCannotRaise() {
+        return cannotRaise;
+    }
+
+    public void setCannotRaise(Boolean cannotRaise) {
+        this.cannotRaise = cannotRaise;
+    }
+
     public String getKey() {
         return key;
     }

@@ -89,6 +89,18 @@ built (dispatch, call stack, exceptions, branch keys) are in [INTER_PROCEDURAL.m
 `CLAUDE.md` lists the invariants the graph must keep for SWAT. `scripts/regression_sweep.py` runs a
 jar over the SV-COMP benchmarks and checks that SWAT can load every graph.
 
+SWAT also runs the **property pre-check** from here before exploring: a separate ASM pass that
+proves no-runtime-exception or valid-assert for a whole program (no SootUp, about 0.2 s).
+
+```bash
+./gradlew precheckJar
+java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.ExceptionFreedomCheck <classpath...>
+scripts/precheck_gate.py --jar build/libs/cfg-extractor-precheck.jar   # release gate: 0 contradictions
+```
+
+It prints one JSON line (`tool`, `version`, `exception_free`, `reason`, `assertion_free`,
+`assertion_reason`). See `CLAUDE.md` for its soundness rules.
+
 ## Usage
 
 ### Java CFG Extraction
