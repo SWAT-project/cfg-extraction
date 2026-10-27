@@ -218,6 +218,27 @@ failure or a throw leaves its method). An exception a caller catches still count
 that may call back into the application is such a site unless the pre-check rules out both a
 callback and an exception, so callbacks need no extra points.
 
+### 10. Data-Flow Facts (for SWAT's relevance analysis)
+
+`DataflowFacts` puts on each node what SWAT needs to compute which branches cannot affect a target
+(see `metadata.dataflowFacts`, a version number):
+
+* `dataflow`: `[written, read]` location pairs. Locals (`l:x`), parameters (`p:0`, `p:this`) and the
+  return value (`ret`) are per method; fields are `f:<name>:<type>` (no points-to analysis), array
+  elements `a:<element kind>`, and `g:input` (the input cursor: every `Verifier.nondet*` reads and
+  advances it), `g:lib` (all library state), `g:out`, `g:exc` (the exception in flight) are global;
+  `*` is every location (reflection, unknown code).
+* `control`: what the node's decision reads (branch condition, switch key, phantom guard operands,
+  an assumption).
+* `terminates`: the node may end the program (`System.exit`, `Runtime.halt`, `Verifier.assume`).
+* `call`: for a call site with CALL edges, what each argument and the receiver read and the local
+  the result goes to; SWAT links them to the callee's parameters and `ret`.
+
+Library calls are summarised by signature (pure, output only, input, terminating, reflective, else
+`g:lib` plus every array they may get plus whatever an application callback may write); statements
+that may run a static initializer also get its transitive effects. Everything over-approximates:
+a missing write lets SWAT slice a branch that matters.
+
 ## Example Output
 
 For this simple program:

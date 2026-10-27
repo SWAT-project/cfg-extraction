@@ -311,6 +311,16 @@ public class ReceiverTypeResolver {
         ClassType declaredType = declared.getDeclClassType();
         Optional<Set<ClassType>> receiverTypes = typesOf(caller, receiver, declaredType, visiting);
 
+        if (receiverTypes.isEmpty() && view.getClass(declaredType).isEmpty()) {
+            // A receiver of a library type that is not on the classpath (a library the analysis
+            // leaves out): nothing below it can be dispatched through the view.
+            if (mayBeLambda(declaredType)) {
+                return new Dispatch(Set.of(), Precision.NONE);
+            }
+            return new Dispatch(applicationOverridesOfMissing(declaredType, declared.getSubSignature()),
+                    Precision.LIBRARY_OVERRIDES_UNLISTED);
+        }
+
         Set<ClassType> candidates;
         Precision precision;
         if (receiverTypes.isPresent()) {
@@ -334,6 +344,14 @@ public class ReceiverTypeResolver {
         MethodSubSignature subSignature = declared.getSubSignature();
         Set<MethodSignature> targets = new LinkedHashSet<>();
         for (ClassType candidate : candidates) {
+            if (receiverTypes.isPresent() && view.getClass(candidate).isEmpty()) {
+                // A runtime type that is not on the classpath, a library class: what it runs is
+                // library code, a leaf of the graph (application classes are all in the view)
+                if (precision == Precision.EXACT) {
+                    precision = Precision.LIBRARY_OVERRIDES_UNLISTED;
+                }
+                continue;
+            }
             Optional<MethodSignature> target = dispatch(candidate, subSignature);
             if (target.isEmpty()) {
                 // A candidate type with no implementation to run means the candidate set is not
@@ -349,6 +367,88 @@ public class ReceiverTypeResolver {
                     declared, caller.getSignature(), targets.size(), precision);
         }
         return new Dispatch(targets, precision);
+    }
+
+    /**
+     * The application methods a call of {@code subSignature} on a receiver of {@code missing}, a
+     * type that is not in the view, may run: for every concrete application class that may be a
+     * subtype of it, the implementation an application class on its superclass chain declares
+     * (or an application interface's default method). A class whose chain has no application
+     * implementation inherits the library's, and library code is a leaf of the graph anyway.
+     *
+     * <p>Whether a class is a subtype is decided by name along its supertypes; a supertype that
+     * is not in the view either might itself be a subtype of {@code missing}, so such a class
+     * counts as one.
+     */
+    private Set<MethodSignature> applicationOverridesOfMissing(ClassType missing, MethodSubSignature subSignature) {
+        Set<MethodSignature> targets = new LinkedHashSet<>();
+        for (ClassType candidate : concreteApplicationTypes()) {
+            if (!mayBeSubtypeByName(candidate, missing)) {
+                continue;
+            }
+            Optional<MethodSignature> implementation = applicationImplementation(candidate, subSignature);
+            implementation.ifPresent(targets::add);
+        }
+        return targets;
+    }
+
+    private boolean mayBeSubtypeByName(ClassType type, ClassType missing) {
+        Set<ClassType> seen = new HashSet<>();
+        List<ClassType> work = new ArrayList<>(List.of(type));
+        while (!work.isEmpty()) {
+            ClassType current = work.remove(work.size() - 1);
+            if (current.equals(missing)) {
+                return true;
+            }
+            if (!seen.add(current)) {
+                continue;
+            }
+            Optional<? extends SootClass> sootClass = view.getClass(current);
+            if (sootClass.isEmpty()) {
+                if (!current.getFullyQualifiedName().equals("java.lang.Object")) {
+                    return true; // an unknown supertype: it may extend the missing type
+                }
+                continue;
+            }
+            sootClass.get().getSuperclass().ifPresent(c -> work.add(c));
+            work.addAll(sootClass.get().getInterfaces());
+        }
+        return false;
+    }
+
+    /** The implementation of {@code subSignature} an application class on {@code type}'s superclass chain declares, else an application interface's default method. */
+    private Optional<MethodSignature> applicationImplementation(ClassType type, MethodSubSignature subSignature) {
+        List<ClassType> interfaces = new ArrayList<>();
+        Optional<ClassType> current = Optional.of(type);
+        while (current.isPresent()) {
+            Optional<? extends SootClass> sootClass = view.getClass(current.get());
+            if (sootClass.isEmpty() || !sootClass.get().isApplicationClass()) {
+                break; // the rest of the chain is library code
+            }
+            Optional<? extends SootMethod> method = sootClass.get().getMethod(subSignature);
+            if (method.isPresent() && !method.get().isAbstract()) {
+                return Optional.of(method.get().getSignature());
+            }
+            interfaces.addAll(sootClass.get().getInterfaces());
+            current = sootClass.get().getSuperclass().map(ClassType.class::cast);
+        }
+        Set<ClassType> seen = new HashSet<>();
+        while (!interfaces.isEmpty()) {
+            ClassType iface = interfaces.remove(interfaces.size() - 1);
+            if (!seen.add(iface)) {
+                continue;
+            }
+            Optional<? extends SootClass> sootClass = view.getClass(iface);
+            if (sootClass.isEmpty() || !sootClass.get().isApplicationClass()) {
+                continue;
+            }
+            Optional<? extends SootMethod> method = sootClass.get().getMethod(subSignature);
+            if (method.isPresent() && !method.get().isAbstract()) {
+                return Optional.of(method.get().getSignature());
+            }
+            interfaces.addAll(sootClass.get().getInterfaces());
+        }
+        return Optional.empty();
     }
 
     private boolean isApplicationType(ClassType type) {
@@ -516,12 +616,18 @@ public class ReceiverTypeResolver {
      *
      * <p>The cast is a filter, not a source of information: the operand's inferred types are
      * narrowed to those the cast admits. A cast whose operand is unknown stays unknown -- the
-     * cast type is an upper bound, not the runtime type.
+     * cast type is an upper bound, not the runtime type -- unless the cast type is an application
+     * type that no lambda implements: then its subtypes, all application classes, are the
+     * possible runtime types (as for {@code this}, see {@link #typesOfThis}).
      */
     private Optional<Set<ClassType>> typesOfCast(SootMethod method, JCastExpr cast, ClassType bound,
             Set<Object> visiting) {
         Optional<Set<ClassType>> operandTypes = typesOf(method, cast.getOp(), bound, visiting);
         if (operandTypes.isEmpty()) {
+            if (cast.getType() instanceof ClassType castType && isApplicationType(castType)
+                    && !mayBeLambda(castType)) {
+                return Optional.of(possibleTypesBelow(castType));
+            }
             return Optional.empty();
         }
         Type castType = cast.getType();

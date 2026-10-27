@@ -8,6 +8,7 @@ import de.uzl.its.cfg.model.CFGEdge.EdgeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sootup.core.jimple.common.expr.AbstractInvokeExpr;
+import sootup.core.jimple.common.expr.JDynamicInvokeExpr;
 import sootup.core.jimple.common.stmt.Stmt;
 import sootup.core.model.Body;
 import sootup.core.model.SootMethod;
@@ -52,6 +53,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
     private final List<String> assertionPointIds;
     private final Set<String> methodPrefixBlacklist;
     private ClinitTargets clinitTargets;
+    /** Data-flow facts for SWAT's relevance analysis (see DataflowFacts). */
+    private DataflowFacts dataflowFacts;
     /** Library call sites (not expanded), and whether they may call back into an assert (see CallbackTargets). */
     private final List<String> libraryCallSiteIds = new ArrayList<>();
     private boolean callbackTargets = true;
@@ -131,6 +134,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 ControlFlowGraph.AnalysisType.INTER_PROCEDURAL);
 
         clinitTargets = new ClinitTargets(view, method.getDeclaringClassType());
+        dataflowFacts = new DataflowFacts(view, clinitTargets, method.getDeclaringClassType());
         pseudo = PseudoExceptions.forProgram(view);
         intraExtractor.setPseudoExceptions(pseudo);
         logger.info("Exceptions of unknown type modelled: {}", pseudo.enabled());
@@ -161,6 +165,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             combinedCFG.addMetadata("raiseSites", intraExtractor.raiseStats.asMap());
         }
         combinedCFG.addMetadata("methodCount", this.processedMethods.size());
+        // Nodes carry data-flow facts (DataflowFacts) for SWAT's relevance analysis; the version
+        // changes whenever their meaning does.
+        combinedCFG.addMetadata("dataflowFacts", 1);
         // Derived rather than written during the walk: a default assigned here would overwrite
         // whatever the walk found, and one assigned before the walk would have to be kept in
         // step with every place that marks a node.
@@ -202,6 +209,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         Map<Stmt, String> nodeIdsByStmt = extraction.nodeIds();
         Map<Stmt, String> entryIdsByStmt = extraction.entryIds();
 
+        Map<String, CFGNode> newNodes = new HashMap<>();
         for (CFGNode node : methodCFG.getNodes()) {
             String newId = methodPrefix + node.getId();
             oldToNewId.put(node.getId(), newId);
@@ -216,7 +224,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             newNode.setException(node.getExceptionType(), node.getExceptionTypeChain());
             newNode.setKey(node.getKey());
             newNode.setCannotRaise(node.getCannotRaise());
+            newNode.setControl(node.getControl()); // phantom guards and switch cases
             combinedCFG.addNode(newNode);
+            newNodes.put(newId, newNode);
         }
 
         // Combine assertions points
@@ -277,6 +287,9 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
 
         // Find call sites and add inter-procedural edges
         Body body = method.getBody();
+        // How each call site was resolved, for its data-flow facts (absent: a library call)
+        Map<Stmt, DataflowFacts.CallKind> callKinds = new HashMap<>();
+        Map<Stmt, Collection<SootMethod>> unresolvedTargets = new HashMap<>();
 
         for (Stmt stmt : body.getControlFlowGraph().getStmts()) {
             if (!isCallSite(stmt)) {
@@ -295,6 +308,8 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // invoked method would be unreachable and every path to this call pruned.
                 logger.info("Reflective call '{}' in {}: marking call site as incomplete", stmt, methodSig);
                 markIncomplete(combinedCFG, callSiteId);
+                callKinds.put(stmt, DataflowFacts.CallKind.UNRESOLVED);
+                unresolvedTargets.put(stmt, null);
                 continue;
             }
 
@@ -339,11 +354,21 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // and an assertion among the possible overrides would make every path leading
                 // here look uninteresting and be pruned. Flag the call site itself so those
                 // paths survive.
-                if (mayHideApplicationCode(dispatch)) {
+                if (getInvokeExpr(stmt).get() instanceof JDynamicInvokeExpr indy
+                        && CallbackTargets.lambdaTargets(indy, view).isPresent()) {
+                    // String concatenation, or the creation of a lambda or method reference: the
+                    // call itself runs no application code. What library code calls back (a
+                    // toString(), the lambda when a library runs it) is a callback, covered as for
+                    // any library call (CallbackTargets); a lambda the application calls is
+                    // dispatched to where it is called (ReceiverTypeResolver).
+                    addLibraryCallSite(calleeOrNull(stmt), callSiteId);
+                } else if (mayHideApplicationCode(dispatch)) {
                     logger.info("Unresolved dispatch at '{}' in {}: {} possible target(s); "
                             + "marking call site as incomplete",
                             stmt, methodSig, dispatch.getTargets().size());
                     markIncomplete(combinedCFG, callSiteId);
+                    callKinds.put(stmt, DataflowFacts.CallKind.UNRESOLVED);
+                    unresolvedTargets.put(stmt, knownTargets(dispatch));
                 } else {
                     addLibraryCallSite(calleeOrNull(stmt), callSiteId);
                 }
@@ -367,8 +392,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             }
             if (!allHaveBodies) {
                 markIncomplete(combinedCFG, callSiteId);
+                callKinds.put(stmt, DataflowFacts.CallKind.UNRESOLVED);
+                unresolvedTargets.put(stmt, null);
                 continue;
             }
+            callKinds.put(stmt, DataflowFacts.CallKind.APPLICATION);
 
             // Where the caller resumes after the callee returns, and where after it throws.
             String returnSiteId = findReturnSite(stmt, nodeIdsByStmt, methodCFG, oldToNewId);
@@ -425,6 +453,34 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                             e -> e.getSource().equals(callSiteId) && e.getType().equals(EdgeType.NORMAL))
                             .toList());
         }
+
+        // The statements' data-flow facts, now that every call site's resolution is known.
+        for (Stmt stmt : body.getControlFlowGraph().getStmts()) {
+            CFGNode node = newNodes.get(oldToNewId.get(nodeIdsByStmt.get(stmt)));
+            if (node != null) {
+                dataflowFacts.annotate(node, stmt, callKinds.getOrDefault(stmt, DataflowFacts.CallKind.LIBRARY),
+                        unresolvedTargets.get(stmt));
+            }
+        }
+    }
+
+    /**
+     * The methods an unresolved call may run, or null if they are not all known: the application
+     * targets dispatch found (whose bodies SWAT's relevance analysis then takes into account).
+     */
+    private Collection<SootMethod> knownTargets(ReceiverTypeResolver.Dispatch dispatch) {
+        if (dispatch.mayRunUnlistedApplicationCode()) {
+            return null;
+        }
+        List<SootMethod> targets = new ArrayList<>();
+        for (MethodSignature target : dispatch.getTargets()) {
+            Optional<? extends SootMethod> m = view.getMethod(target);
+            if (m.isEmpty() && isApplicationMethod(target)) {
+                return null;
+            }
+            m.ifPresent(targets::add);
+        }
+        return targets;
     }
 
     /** A call site that got a CALL edge, as far as exception unwinding needs to know it. */
