@@ -87,8 +87,7 @@ extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. Th
 follows them; after such an exception SWAT stops trusting the graph until it finds it again at a
 later branch by key (resync, see the branch keys below).
 
-**In progress (branch `niklas/relevance-slicing`, started 2026-10-26): relevance, then loop
-summarization.** Nodes carry data-flow facts (`DataflowFacts`: which abstract locations each
+**Relevance and loop summarization (merged into `master` 2026-10-27, tag `v0.2.0`).** Nodes carry data-flow facts (`DataflowFacts`: which abstract locations each
 statement writes and reads, call arguments, terminators such as `System.exit` and
 `Verifier.assume`). SWAT uses them to compute which branches are irrelevant to the targets (a
 static slice) and stops flipping those. Loop summarization lives in SWAT's executor
@@ -132,6 +131,11 @@ java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.Except
   with 0 contradictions before a release.
 - **Releases:** SWAT ships the jar in its SV-COMP archive, built in CI at the tag named in
   `SWAT/cfg-extraction.ref`. To release: pass the gate, tag, push the tag, then move the ref.
+  `v0.1.0` is the pre-check alone; `v0.2.0` adds the data-flow facts for SWAT's relevance analysis
+  (same pre-check). The gate needs PyYAML.
+- **License:** MIT (`LICENSE`); both jars carry it (`META-INF/LICENSE`, in the fat jar
+  `META-INF/LICENSE-cfg-extraction`). The repository is public, so SWAT's CI checks it out
+  without a token.
 
 ## SootUp traps
 
