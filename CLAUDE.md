@@ -38,9 +38,9 @@ visualize/.venv/bin/python visualize/visualize_cfg.py <graph.json> [out.svg] [--
 SWAT walks this graph **in lockstep** with the execution tree, pairing branch for branch **by
 position**. If the graph has a branch the execution doesn't, or the other way round, every later
 pairing on that path is off: it prunes the wrong paths and can produce false SAFE verdicts. SWAT
-checks the pairing where both sides have a key (`BranchKeys`, the node's `key` field) and stops
-trusting the graph at a mismatch, but a branch without a key goes unchecked, so the structure must
-still be right.
+checks the pairing where both sides have a key (`BranchKeys`, the node's `key` field); at a
+mismatch (a desync) its walk is *lost*: it prunes nothing until it finds the graph again by key.
+A branch without a key goes unchecked, though, so the structure must still be right.
 
 Branch and call-site keys are `owner.name(desc)|line|kind|ordinal`, and must equal what SWAT's
 executor computes from bytecode (`instrument/BranchKeys`). SootUp keeps no bytecode offsets and its
@@ -63,8 +63,8 @@ So every change to the branch structure must match what SWAT's executor actually
 Concrete (non-symbolic) branches count too. Invokes, returns, `goto` and `athrow` do not.
 
 Where the graph cannot describe what runs, mark the node incomplete with `markIncomplete`. That
-flags the node itself and also reports it as an assertion point, so SWAT stops trusting the graph
-beyond the node but still treats the paths leading to it as interesting.
+flags the node itself and also reports it as an assertion point, so SWAT's walk is lost beyond
+the node but still treats the paths leading to it as interesting.
 
 Assertion points (`new java.lang.AssertionError`) are only the first kind of target, chosen
 because they are easy to test. Later targets include shell calls, SQL statement building and
@@ -84,7 +84,7 @@ Resolution).
 Exceptions without a phantom guard (casts, null dereferences, exceptions thrown by library calls,
 Errors) are modelled as pseudo exception types (`PseudoExceptions`, see `INTER_PROCEDURAL.md`):
 extra EXCEPTION edges and `uncaught[?...]` escapes for backward marking only. The walk never
-follows them; after such an exception SWAT stops trusting the graph until it finds it again at a
+follows them; after such an exception SWAT's walk is lost until it finds the graph again at a
 later branch by key (resync, see the branch keys below).
 
 **Relevance and loop summarization (merged into `master` 2026-10-27, tag `v0.2.0`).** Nodes carry data-flow facts (`DataflowFacts`: which abstract locations each
