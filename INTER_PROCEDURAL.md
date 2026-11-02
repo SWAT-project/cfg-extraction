@@ -330,8 +330,8 @@ method. See the visualization section of README.md for all options.
    each CALL edge lists its handlers that might catch each pseudo type (`unknownHandlers`). SWAT's
    summaries treat a pseudo escape as caught by any listed handler, or by none. So the paths into
    such handlers stay interesting. Where the execution goes after such an exception the graph
-   cannot say; the executor reports it in the trace (`UNMODELLED_EXCEPTION`), and SWAT stops
-   trusting the graph until it finds it again at a later branch by its key (see Branch Keys).
+   cannot say; the executor reports it in the trace (`UNMODELLED_EXCEPTION`), and SWAT's walk is
+   lost until it finds the graph again at a later branch by its key (see Branch Keys).
    Pseudo types are only emitted if some handler in the program could catch them
 
 3. **Nested try blocks**: of two handlers catching `T`, the one with the more specific type is
