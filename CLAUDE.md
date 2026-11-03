@@ -14,7 +14,8 @@ java -ea -jar build/libs/cfg-extractor-1.0-SNAPSHOT-all.jar <classes-dir> <out-d
 - Always use `-ea` when testing. The code relies on `assert` for invariant checks, and those
   failures are real bugs.
 - SWAT runs the jar straight from `build/libs/` (without `-ea`, with a 120 s timeout), so
-  rebuilding changes what the next SWAT run uses.
+  rebuilding changes what the next SWAT run uses. SWAT's SV-COMP archive ships the fat jar too
+  (as `cfg-extraction/cfg-extractor.jar`, built in CI at the tag in `SWAT/cfg-extraction.ref`).
 - `target/` holds small smoke-test programs, one entry class per file. Compile them in place with
   `javac -g -d target/ target/X.java`. `.class` files are gitignored.
 - `scripts/regression_sweep.py` runs a jar over the SV-COMP benchmarks and checks that SWAT can
@@ -136,6 +137,14 @@ java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.Except
 - **License:** MIT (`LICENSE`); both jars carry it (`META-INF/LICENSE`, in the fat jar
   `META-INF/LICENSE-cfg-extraction`). The repository is public, so SWAT's CI checks it out
   without a token.
+- **Bundled dependencies:** both jars list what they bundle in `META-INF/swat-third-party.json`
+  (`precheckComponentList`, `fatJarComponentList`: license and URL from each POM), from which
+  SWAT writes the archive's THIRD-PARTY-LICENSES.md; an unmapped license fails its packaging.
+  Since the fat jar is redistributed, no dependency may be GPL: graph4j (GPL, from
+  `sootup.callgraph`, only used by its `GraphBasedCallGraph`) is excluded, and
+  `sootup.analysis.interprocedural` (heros, functionaljava) is not a dependency since nothing uses
+  it. Check the list (`unzip -p build/libs/cfg-extractor-1.0-SNAPSHOT-all.jar
+  META-INF/swat-third-party.json`) after adding or upgrading a dependency.
 
 ## SootUp traps
 

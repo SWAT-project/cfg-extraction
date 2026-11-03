@@ -20,14 +20,18 @@ repositories {
 
 dependencies {
     // SootUp dependencies
-    // Note: two artifacts were renamed in SootUp 2.0.0:
-    //   sootup.java.bytecode -> sootup.java.bytecode.frontend
-    //   sootup.analysis      -> sootup.analysis.interprocedural
+    // Note: sootup.java.bytecode was renamed to sootup.java.bytecode.frontend in SootUp 2.0.0.
+    // The fat jar ships in SWAT's SV-COMP archive, so every dependency here is redistributed:
+    // - sootup.analysis.interprocedural (heros, functionaljava) is not used, so it is not a dependency.
+    // - Of sootup.callgraph only AbstractCallGraphAlgorithm.resolveConcreteDispatch is used. graph4j
+    //   (GPL, which the fat jar must not bundle) is only used by its GraphBasedCallGraph, which the
+    //   extractor never builds, so it is excluded.
     implementation 'org.soot-oss:sootup.core:3.0.1'
     implementation 'org.soot-oss:sootup.java.core:3.0.1'
     implementation 'org.soot-oss:sootup.java.bytecode.frontend:3.0.1'
-    implementation 'org.soot-oss:sootup.callgraph:3.0.1'
-    implementation 'org.soot-oss:sootup.analysis.interprocedural:3.0.1'
+    implementation('org.soot-oss:sootup.callgraph:3.0.1') {
+        exclude group: 'org.graph4j', module: 'graph4j'
+    }
 
     // JSON serialization
     implementation 'com.google.code.gson:gson:2.10.1'
@@ -77,6 +81,60 @@ task runAnalysis(type: JavaExec) {
     enableAssertions = true
 }
 
+// META-INF/swat-third-party.json for the fat jar: every bundled dependency with license and project
+// URL from its POM (or the nearest parent POM declaring them), like SWAT's thirdPartyList task.
+// SWAT ships the fat jar in its SV-COMP archive (the static pre-analysis), and its
+// scripts/svcomp-package/third_party_licenses.py turns this list into THIRD-PARTY-LICENSES.md.
+def fatJarComponents = layout.buildDirectory.dir('generated/fatjar-third-party')
+task fatJarComponentList {
+    def classpath = configurations.runtimeClasspath
+    inputs.files(classpath)
+    outputs.dir(fatJarComponents)
+    notCompatibleWithConfigurationCache('resolves POMs at execution time')
+    doLast {
+        def pomOf = { String g, String a, String v ->
+            def result = project.dependencies.createArtifactResolutionQuery()
+                    .forModule(g, a, v)
+                    .withArtifacts(MavenModule, MavenPomArtifact)
+                    .execute()
+            def artifacts = result.resolvedComponents*.getArtifacts(MavenPomArtifact).flatten()
+                    .findAll { it instanceof ResolvedArtifactResult }
+            if (artifacts.isEmpty()) throw new GradleException("No POM found for ${g}:${a}:${v}")
+            new groovy.xml.XmlSlurper().parse(artifacts[0].file)
+        }
+        def entries = []
+        classpath.incoming.artifacts.each { ResolvedArtifactResult art ->
+            def id = art.id.componentIdentifier
+            def name = art.file.name
+            boolean hasClasses = name.endsWith('.jar') &&
+                    project.zipTree(art.file).matching { include '**/*.class' }.files.size() > 0
+            if (!hasClasses) return // e.g. guava's empty listenablefuture placeholder
+            if (!(id instanceof ModuleComponentIdentifier)) {
+                throw new GradleException("Unknown bundled dependency ${name}: add it to fatJarComponentList")
+            }
+            def license = null, url = null
+            def pom = pomOf(id.group, id.module, id.version)
+            while (pom != null && (license == null || url == null)) {
+                if (license == null && pom.licenses.license.size() > 0) {
+                    license = pom.licenses.license.collect {
+                        [name: it.name.text().trim(), url: it.url.text().trim()]
+                    }
+                }
+                if (url == null && pom.url.text().trim()) url = pom.url.text().trim()
+                def parent = pom.parent
+                pom = parent.size() > 0 ?
+                        pomOf(parent.groupId.text(), parent.artifactId.text(), parent.version.text()) : null
+            }
+            entries << [group: id.group, name: id.module, version: id.version,
+                        licenses: license ?: [], url: url ?: '']
+        }
+        def out = fatJarComponents.get().file('META-INF/swat-third-party.json').asFile
+        out.parentFile.mkdirs()
+        out.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(
+                entries.sort { "${it.group}:${it.name}" }))
+    }
+}
+
 // Self-contained executable jar (bundles all runtime dependencies)
 task fatJar(type: Jar) {
     group = 'build'
@@ -86,6 +144,8 @@ task fatJar(type: Jar) {
         attributes 'Main-Class': application.mainClass, 'Implementation-Version': gitVersion()
     }
     from sourceSets.main.output
+    // First, so that no dependency's file of the same name wins (DuplicatesStrategy.EXCLUDE)
+    from(fatJarComponentList)
     // Dependencies bring their own META-INF/LICENSE files, so ours gets a name of its own.
     from('LICENSE') { into 'META-INF'; rename { 'LICENSE-cfg-extraction' } }
     from {
