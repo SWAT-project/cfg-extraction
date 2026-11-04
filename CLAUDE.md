@@ -146,6 +146,31 @@ java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.Except
   it. Check the list (`unzip -p build/libs/cfg-extractor-1.0-SNAPSHOT-all.jar
   META-INF/swat-third-party.json`) after adding or upgrading a dependency.
 
+## Loop facts (`loops`)
+
+`de.uzl.its.cfg.loops` holds the loop analyses SWAT's executor uses: `LoopHeads` (the loop heads
+and the locals defined there, for loop-state matching) and `LoopSummaries` with `BodyAnalysis` and
+`TaintCheck` (diamonds and counting loops the executor merges into formulas). They moved here from
+the executor on 2026-11-04. ASM only, no SootUp, no other dependency.
+
+- **Two consumers, one implementation.** `Main` writes `loop_facts.json` (`LoopFactsJson`) into the
+  output directory before building the SootUp view (`--no-loop-facts` skips it), and SWAT's
+  executor bundles `build/libs/cfg-extractor-loops.jar` (`./gradlew loopsJar`: these classes
+  only) to read the file and to compute the facts of methods the file lacks. A change here changes
+  both after a rebuild of the executor (SWAT's `cfgLoopsJar` task rebuilds the jar when these
+  sources change).
+- **Facts are keyed by code, not by name alone.** Each method's entry has `LoopFacts.hash`, over its
+  real instructions; the executor ignores facts whose hash differs. Bump `LoopFacts.VERSION` when
+  the meaning or the format of the facts changes.
+- **Positions.** Jumps are named by their ordinal among the method's jump instructions, labels by
+  the number of real instructions before them (`Positions`), so that the facts do not depend on
+  how the class was read (frames, debug info). Join ids are unique per method.
+- **TaintCheck encodes what the executor keeps symbolic** (merged values must not reach calls,
+  heap or array stores, array indices or sizes, returns). If the executor starts concretizing
+  elsewhere, this must follow, or summaries become unsound.
+- **Tests:** `./gradlew test --tests 'de.uzl.its.cfg.loops.*'`. `LoopFactsSpec` checks the
+  round trip through the file and that facts and hash do not depend on how a class was read.
+
 ## SootUp traps
 
 - **No body interceptors.** The view is built with `List.of()` on purpose. Interceptors reshape

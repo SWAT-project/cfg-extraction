@@ -202,6 +202,22 @@ task precheckJar(type: Jar) {
 
 build.dependsOn precheckJar
 
+// The loop facts (de.uzl.its.cfg.loops) alone, without dependencies, for SWAT's executor: it
+// bundles this jar (and its own ASM) to read the facts file and to compute the facts of classes
+// the file does not have. The fat jar has the same classes and writes the file (LoopFactsMain).
+task loopsJar(type: Jar) {
+    group = 'build'
+    description = 'Build the loop-facts library jar (de.uzl.its.cfg.loops, no dependencies)'
+    archiveFileName = 'cfg-extractor-loops.jar'
+    manifest {
+        attributes 'Implementation-Version': gitVersion()
+    }
+    from(sourceSets.main.output) { include 'de/uzl/its/cfg/loops/**' }
+    from('LICENSE') { into 'META-INF'; rename { 'LICENSE-cfg-extraction' } }
+}
+
+build.dependsOn loopsJar
+
 // Create output directory
 task createOutputDir {
     doLast {

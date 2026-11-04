@@ -80,6 +80,12 @@ public class Main {
             Path outputPath = Paths.get(outputDir);
             Files.createDirectories(outputPath);
 
+            // The loop facts first: they need no SootUp view and SWAT's executor can use them
+            // even if the graph is not done in time
+            if (!java.util.Arrays.asList(args).contains("--no-loop-facts")) {
+                writeLoopFacts(inputPath, outputPath);
+            }
+
             // Run analysis
             extractCFGs(inputPath, outputPath, entryClassName, entryMethodName, analysisType);
 
@@ -89,6 +95,25 @@ public class Main {
         } catch (Exception e) {
             logger.error("Error during CFG extraction", e);
             System.exit(1);
+        }
+    }
+
+    /** The name of the loop facts file in the output directory (SWAT's driver passes it on). */
+    public static final String LOOP_FACTS_FILE = "loop_facts.json";
+
+    /** Writes the loop facts of every class on the input path (de.uzl.its.cfg.loops). */
+    private static void writeLoopFacts(String inputPath, Path outputDir) {
+        long start = System.nanoTime();
+        try {
+            int[] classes = {0};
+            var methods = de.uzl.its.cfg.loops.LoopFactsMain.analyze(
+                    List.of(inputPath.split(File.pathSeparator)), outputDir, classes);
+            de.uzl.its.cfg.loops.LoopFactsMain.write(methods, outputDir.resolve(LOOP_FACTS_FILE));
+            logger.info("Loop facts: {} classes, {} methods, {} with facts, in {} ms", classes[0], methods.size(),
+                    methods.values().stream().filter(f -> !f.isEmpty()).count(), (System.nanoTime() - start) / 1_000_000);
+        } catch (IOException | RuntimeException e) {
+            // Not fatal: the executor computes the facts itself
+            logger.warn("Could not write the loop facts: {}", e.toString());
         }
     }
 
@@ -313,7 +338,7 @@ public class Main {
         System.out.println();
         System.out.println("Usage:");
         System.out.println(
-                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts]");
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts] [--no-loop-facts]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");
