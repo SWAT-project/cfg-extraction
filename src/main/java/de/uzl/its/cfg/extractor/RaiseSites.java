@@ -3,6 +3,7 @@ package de.uzl.its.cfg.extractor;
 import de.uzl.its.cfg.model.CFGNode;
 import de.uzl.its.cfg.model.ControlFlowGraph;
 import de.uzl.its.cfg.staticcheck.SiteFacts;
+import de.uzl.its.cfg.staticcheck.SwatHelpers;
 import java.util.*;
 import sootup.core.jimple.common.expr.AbstractInvokeExpr;
 import sootup.core.jimple.common.expr.JCastExpr;
@@ -129,8 +130,12 @@ final class RaiseSites {
         if (stmt.isInvokableStmt() && stmt.asInvokableStmt().getInvokeExpr().isPresent()) {
             AbstractInvokeExpr invoke = stmt.asInvokableStmt().getInvokeExpr().get();
             var sig = invoke.getMethodSignature();
-            kinds.add(SiteFacts.callKind(sig.getDeclClassType().getFullyQualifiedName().replace('.', '/'), sig.getName(),
-                    DataflowFacts.descriptorOf(sig)));
+            String owner = sig.getDeclClassType().getFullyQualifiedName().replace('.', '/');
+            String desc = DataflowFacts.descriptorOf(sig);
+            // SWAT's refEquals and bookkeeping in prepared classes raise nothing (as SiteFacts.siteKind)
+            if (!SwatHelpers.isTransparent(SwatHelpers.kindOf(owner, sig.getName(), desc))) {
+                kinds.add(SiteFacts.callKind(owner, sig.getName(), desc));
+            }
         }
         return kinds;
     }

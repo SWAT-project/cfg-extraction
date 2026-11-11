@@ -109,6 +109,8 @@ public final class SiteFacts {
         }
         if (insn instanceof MethodInsnNode) {
             MethodInsnNode mi = (MethodInsnNode) insn;
+            // SWAT's refEquals and bookkeeping in prepared classes raise nothing: no site
+            if (SwatHelpers.isTransparent(SwatHelpers.kindOf(mi.owner, mi.name, mi.desc))) return null;
             return callKind(mi.owner, mi.name, mi.desc);
         }
         if (insn instanceof InvokeDynamicInsnNode) return "call:" + ((InvokeDynamicInsnNode) insn).name + ((InvokeDynamicInsnNode) insn).desc;
