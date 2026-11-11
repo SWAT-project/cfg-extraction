@@ -224,7 +224,7 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
                 MethodInsnNode mi = (MethodInsnNode) insns[i];
                 String reason = openWorldReason(mi, f[i]);
                 if (reason != null) return m.key + ": line " + line(mi) + ": " + reason;
-                Program.Targets t = mi.owner.startsWith(Program.VERIFIER_PACKAGE) ? null : targets(mi);
+                Program.Targets t = isModelledOwner(mi) ? null : targets(mi);
                 if (t != null) work.addAll(t.methods);
             }
         }
@@ -362,6 +362,18 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
             if (insn.name.equals("nondetString")) return AbsValue.exact("java/lang/String");
             return FactInterpreter.ofType(ret);
         }
+        if (SwatHelpers.isSwat(insn.owner)) {
+            switch (SwatHelpers.kindOf(insn.owner, insn.name, insn.desc)) {
+                case IDENTITY:
+                    return args.get(0); // liftValue(value, id): the value
+                case NONDET:
+                case INTERN:
+                    if (ret.getDescriptor().equals("Ljava/lang/String;")) return AbsValue.exact("java/lang/String");
+                    return FactInterpreter.ofType(ret);
+                default:
+                    return FactInterpreter.ofType(ret);
+            }
+        }
         if (insn.getOpcode() == INVOKESTATIC && insn.name.equals("values") && program.isEnum(insn.owner)
                 && insn.desc.equals("()[L" + insn.owner + ";")) {
             return AbsValue.array("[L" + insn.owner + ";", null, insn.owner);
@@ -422,7 +434,7 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
     }
 
     private Program.Targets computeTargets(MethodInsnNode mi) {
-        if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) return new Program.Targets();
+        if (isModelledOwner(mi)) return new Program.Targets();
         int op = mi.getOpcode();
         if ((op == INVOKEVIRTUAL || op == INVOKEINTERFACE) && program.isApp(mi.owner)) {
             return program.virtualTargets(mi.owner, mi.name, mi.desc);
@@ -570,6 +582,8 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
         }
         if (!(insn instanceof MethodInsnNode)) return false;
         MethodInsnNode mi = (MethodInsnNode) insn;
+        // SWAT's refEquals and its bookkeeping (prepared classes) keep no reference the program can reach.
+        if (SwatHelpers.isTransparent(SwatHelpers.kindOf(mi.owner, mi.name, mi.desc))) return false;
         int n = Type.getArgumentTypes(mi.desc).length;
         for (int i = 0; i < n; i++) if (top(frame, i).mayBeThis) return true;
         if (op == INVOKESTATIC || !top(frame, n).mayBeThis) return false;
@@ -616,7 +630,7 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
                     if (!isStringConcat((InvokeDynamicInsnNode) insn)) return true;
                 } else if (insn instanceof MethodInsnNode) {
                     MethodInsnNode mi = (MethodInsnNode) insn;
-                    if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) {
+                    if (isModelledOwner(mi)) {
                         if (!isModelledVerifierCall(mi)) return true;
                         continue;
                     }
@@ -682,7 +696,27 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
         return true;
     }
 
+    /**
+     * Calls the check models instead of resolving: the SV-COMP Verifier package, and SWAT's own
+     * classes, which prepared classes call (see {@link SwatHelpers}). Neither is on the classpath
+     * as application code.
+     */
+    private static boolean isModelledOwner(MethodInsnNode mi) {
+        return mi.owner.startsWith(Program.VERIFIER_PACKAGE) || SwatHelpers.isSwat(mi.owner);
+    }
+
+    /**
+     * The modelled calls among those (see {@link #isModelledOwner}): Verifier.assume and the
+     * primitive and String nondet methods, and SWAT's helpers that stand for them or for nothing at
+     * all in the original program. SWAT's replacements of Runtime.exit and Runtime.halt are not
+     * modelled, as the JDK methods are not either.
+     */
     private static boolean isModelledVerifierCall(MethodInsnNode mi) {
+        if (SwatHelpers.isSwat(mi.owner)) {
+            SwatHelpers.Kind kind = SwatHelpers.kindOf(mi.owner, mi.name, mi.desc);
+            return mi.getOpcode() == INVOKESTATIC && kind != SwatHelpers.Kind.UNMODELLED
+                    && kind != SwatHelpers.Kind.RUNTIME_EXIT;
+        }
         return mi.owner.equals(Program.VERIFIER_PACKAGE + "Verifier") && mi.getOpcode() == INVOKESTATIC
                 && (mi.name.equals("assume") || (mi.name.startsWith("nondet") && !mi.name.equals("nondetObject")));
     }
@@ -845,7 +879,7 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
      */
     private String openWorldReason(MethodInsnNode mi, Frame<AbsValue> f) {
         int op = mi.getOpcode();
-        if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) {
+        if (isModelledOwner(mi)) {
             return isModelledVerifierCall(mi) ? null : "call to " + mi.owner + "." + mi.name;
         }
         Type[] args = Type.getArgumentTypes(mi.desc);
@@ -877,7 +911,7 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
     private String call(MethodInsnNode mi, Frame<AbsValue> f, Map<String, String> mayThrow) {
         String local = callSite(mi, f);
         if (local != null) return local;
-        if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) return null;
+        if (isModelledOwner(mi)) return null;
         Type[] args = Type.getArgumentTypes(mi.desc);
         AbsValue receiver = mi.getOpcode() == INVOKESTATIC ? null : top(f, args.length);
         if (receiver != null && receiver.isBottom()) return null;
@@ -895,7 +929,10 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
     private String callSite(MethodInsnNode mi, Frame<AbsValue> f) {
         String open = openWorldReason(mi, f);
         if (open != null) return open;
-        if (mi.owner.startsWith(Program.VERIFIER_PACKAGE)) return null;
+        if (SwatHelpers.kindOf(mi.owner, mi.name, mi.desc) == SwatHelpers.Kind.INTERN && !top(f, 0).isNonNull()) {
+            return "call with an argument that may be null: " + mi.owner + "." + mi.name; // as s.intern()
+        }
+        if (isModelledOwner(mi)) return null;
         int op = mi.getOpcode();
         Type[] args = Type.getArgumentTypes(mi.desc);
         AbsValue receiver = op == INVOKESTATIC ? null : top(f, args.length);

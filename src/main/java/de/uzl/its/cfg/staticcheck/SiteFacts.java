@@ -90,7 +90,8 @@ public final class SiteFacts {
      * The statement site kind of the instruction, or null if it raises no RuntimeException itself:
      * {@code arr:load}, {@code arr:store}, {@code alen}, {@code getfield:<name>},
      * {@code putfield:<name>}, {@code cast}, {@code throw}, {@code monitor},
-     * {@code call:<name><desc>} (as BranchKeys names call sites). Division and array allocation
+     * {@code call:<name><desc>} (as BranchKeys names call sites; constructors with their class, see
+     * {@link #callKind}). Division and array allocation
      * only raise through their guard.
      */
     public static String siteKind(AbstractInsnNode insn) {
@@ -106,9 +107,22 @@ public final class SiteFacts {
             case Opcodes.MONITORENTER: case Opcodes.MONITOREXIT: return "monitor";
             default: break;
         }
-        if (insn instanceof MethodInsnNode) return "call:" + ((MethodInsnNode) insn).name + ((MethodInsnNode) insn).desc;
+        if (insn instanceof MethodInsnNode) {
+            MethodInsnNode mi = (MethodInsnNode) insn;
+            return callKind(mi.owner, mi.name, mi.desc);
+        }
         if (insn instanceof InvokeDynamicInsnNode) return "call:" + ((InvokeDynamicInsnNode) insn).name + ((InvokeDynamicInsnNode) insn).desc;
         return null;
+    }
+
+    /**
+     * The site kind of a call: {@code call:<name><desc>}, for a constructor {@code
+     * call:<owner>.<init><desc>}. The class tells constructors with the same descriptor on one line
+     * apart, e.g. {@code new IllegalArgumentException(new String("..."))} in prepared classes, where
+     * SWAT's preparation turns the literal into a constructor call.
+     */
+    public static String callKind(String owner, String name, String desc) {
+        return name.equals("<init>") ? "call:" + owner + "." + name + desc : "call:" + name + desc;
     }
 
     /** One JSON object: the world, the safe guard keys and every site group with its fact. */

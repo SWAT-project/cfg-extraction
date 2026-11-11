@@ -147,6 +147,13 @@ final class JdkModel {
                     "toHexString(" + p + ")Ljava/lang/String;", "toOctalString(" + p + ")Ljava/lang/String;");
         }
         add("java/lang/Integer", none, decl, "toUnsignedLong(I)J");
+        // The box constructors (deprecated, but SWAT's preparation puts them in place of valueOf).
+        add("java/lang/Integer", none, decl, "<init>(I)V");
+        add("java/lang/Long", none, decl, "<init>(J)V");
+        add("java/lang/Short", none, decl, "<init>(S)V");
+        add("java/lang/Byte", none, decl, "<init>(B)V");
+        add("java/lang/Character", none, decl, "<init>(C)V");
+        add("java/lang/Boolean", none, decl, "<init>(Z)V");
         for (String[] b : new String[][] {{"Double", "D", "J"}, {"Float", "F", "I"}}) {
             String o = "java/lang/" + b[0], p = b[1], bits = b[2];
             String toBits = p.equals("D") ? "doubleToLongBits" : "floatToIntBits";
