@@ -324,7 +324,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // Check if method is blacklisted
                 if (isBlacklisted(calleeSig)) {
                     logger.debug("Skipping blacklisted method: {}", calleeSig);
-                    addLibraryCallSite(calleeSig, callSiteId);
+                    addLibraryCallSite(stmt, callSiteId);
                     continue;
                 }
 
@@ -332,13 +332,13 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 // library methods now resolve. Only expand methods from the analysed input path.
                 if (!isApplicationMethod(calleeSig)) {
                     logger.debug("Skipping library method: {}", calleeSig);
-                    addLibraryCallSite(calleeSig, callSiteId);
+                    addLibraryCallSite(stmt, callSiteId);
                     continue;
                 }
 
                 if (view.getMethod(calleeSig).isEmpty()) {
                     logger.debug("Callee not found in view (may be library method): {}", calleeSig);
-                    addLibraryCallSite(calleeSig, callSiteId);
+                    addLibraryCallSite(stmt, callSiteId);
                     continue;
                 }
                 calleeSigs = List.of(calleeSig);
@@ -361,7 +361,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                     // toString(), the lambda when a library runs it) is a callback, covered as for
                     // any library call (CallbackTargets); a lambda the application calls is
                     // dispatched to where it is called (ReceiverTypeResolver).
-                    addLibraryCallSite(calleeOrNull(stmt), callSiteId);
+                    addLibraryCallSite(stmt, callSiteId);
                 } else if (mayHideApplicationCode(dispatch)) {
                     logger.info("Unresolved dispatch at '{}' in {}: {} possible target(s); "
                             + "marking call site as incomplete",
@@ -370,7 +370,7 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                     callKinds.put(stmt, DataflowFacts.CallKind.UNRESOLVED);
                     unresolvedTargets.put(stmt, knownTargets(dispatch));
                 } else {
-                    addLibraryCallSite(calleeOrNull(stmt), callSiteId);
+                    addLibraryCallSite(stmt, callSiteId);
                 }
                 continue;
             }
@@ -580,15 +580,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
      * every later pairing on the path shifted by them.
      */
     /** A call into library code, which may call back into the application (see CallbackTargets). */
-    private void addLibraryCallSite(MethodSignature callee, String callSiteId) {
-        // SWAT's Verifier stubs never call back.
-        if (callee == null || !callee.getDeclClassType().getFullyQualifiedName().equals("org.sosy_lab.sv_benchmarks.Verifier")) {
+    private void addLibraryCallSite(Stmt stmt, String callSiteId) {
+        // The Verifier stubs, SWAT's helpers (prepared classes) and pure methods never call back.
+        if (getInvokeExpr(stmt).map(invoke -> !DataflowFacts.cannotCallBack(invoke)).orElse(true)) {
             libraryCallSiteIds.add(callSiteId);
         }
-    }
-
-    private MethodSignature calleeOrNull(Stmt stmt) {
-        return getInvokeExpr(stmt).map(AbstractInvokeExpr::getMethodSignature).orElse(null);
     }
 
     private void markIncomplete(ControlFlowGraph combinedCFG, String nodeId) {

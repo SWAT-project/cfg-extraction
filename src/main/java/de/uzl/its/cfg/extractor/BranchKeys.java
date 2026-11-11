@@ -1,6 +1,7 @@
 package de.uzl.its.cfg.extractor;
 
 import de.uzl.its.cfg.model.CFGEdge;
+import de.uzl.its.cfg.staticcheck.SwatHelpers;
 import de.uzl.its.cfg.model.CFGNode;
 import de.uzl.its.cfg.model.ControlFlowGraph;
 import java.io.IOException;
@@ -114,8 +115,10 @@ final class BranchKeys {
         }
 
         List<GraphEvent> events = new ArrayList<>();
+        Stmt previous = null;
         for (Stmt stmt : stmts) {
-            collectEvents(stmt, stmtToId.get(stmt), entryIds.get(stmt), outgoing, cfg, events);
+            collectEvents(stmt, previous, stmtToId.get(stmt), entryIds.get(stmt), outgoing, cfg, events);
+            previous = stmt;
         }
 
         // Per line and kind, the signatures in order on each side.
@@ -155,8 +158,8 @@ final class BranchKeys {
     }
 
     /** The events of one statement, in the executor's order: its guards, then the statement itself. */
-    private static void collectEvents(Stmt stmt, String nodeId, String entryId, Map<String, List<CFGEdge>> outgoing,
-            ControlFlowGraph cfg, List<GraphEvent> events) {
+    private static void collectEvents(Stmt stmt, Stmt previous, String nodeId, String entryId,
+            Map<String, List<CFGEdge>> outgoing, ControlFlowGraph cfg, List<GraphEvent> events) {
         int line = PhantomGuardEmitter.lineNumberOf(stmt);
         List<SwatGuardClassifier.Guard> guards = SwatGuardClassifier.guardsOf(stmt);
         if (!guards.isEmpty()) {
@@ -182,7 +185,11 @@ final class BranchKeys {
             }
         }
         if (stmt instanceof JIfStmt ifStmt) {
-            events.add(new GraphEvent(new Event(line, "if", signatureOf(ifStmt)), List.of(nodeId), List.of("")));
+            String signature = signatureOf(ifStmt);
+            if (isRefEqualsTest(ifStmt, previous)) {
+                signature = signature.substring(0, 2) + "ref";
+            }
+            events.add(new GraphEvent(new Event(line, "if", signature), List.of(nodeId), List.of("")));
         } else if (stmt instanceof JSwitchStmt switchStmt) {
             List<String> caseIds = caseChain(nodeId, outgoing, cfg);
             List<String> suffixes = new ArrayList<>();
@@ -221,6 +228,23 @@ final class BranchKeys {
         String operand = op2 instanceof IntConstant c ? String.valueOf(c.getValue())
                 : op2 instanceof NullConstant ? "null" : "v";
         return op + operand;
+    }
+
+    /**
+     * Whether the if tests the result of SWAT's {@code UtilInstrumented.refEquals}, computed by the
+     * statement right before it: a reference comparison in a prepared class (see SwatHelpers). Its
+     * signature is then {@code ==ref} or {@code !=ref}, which tells it apart from a test of a
+     * boolean on the same line (both would be {@code !=0} otherwise).
+     */
+    private static boolean isRefEqualsTest(JIfStmt ifStmt, Stmt previous) {
+        if (!(previous instanceof JAssignStmt assign) || !assign.getLeftOp().equals(ifStmt.getCondition().getOp1())
+                || !(ifStmt.getCondition().getOp2() instanceof IntConstant c) || c.getValue() != 0
+                || !previous.isInvokableStmt() || previous.asInvokableStmt().getInvokeExpr().isEmpty()) {
+            return false;
+        }
+        MethodSignature sig = previous.asInvokableStmt().getInvokeExpr().get().getMethodSignature();
+        return SwatHelpers.kindOfDotted(sig.getDeclClassType().getFullyQualifiedName(), sig.getName(),
+                DataflowFacts.descriptorOf(sig)) == SwatHelpers.Kind.REF_EQUALS;
     }
 
     private static List<String> sorted(List<String> list) {
@@ -383,6 +407,10 @@ final class BranchKeys {
             if (op == Opcodes.IFNULL || op == Opcodes.IFNONNULL) {
                 return cmp + "null";
             }
+            if ((op == Opcodes.IFEQ || op == Opcodes.IFNE) && previousInsn(insn) instanceof MethodInsnNode m
+                    && SwatHelpers.kindOf(m.owner, m.name, m.desc) == SwatHelpers.Kind.REF_EQUALS) {
+                return cmp + "ref"; // see isRefEqualsTest
+            }
             if (op >= Opcodes.IFEQ && op <= Opcodes.IFLE) {
                 return cmp + "0";
             }
@@ -409,12 +437,18 @@ final class BranchKeys {
         return "";
     }
 
-    /** The int or String constant the instruction before {@code insn} pushes, if it is one. */
-    private static String constantBefore(AbstractInsnNode insn) {
+    /** The real instruction before {@code insn} (no label, line or frame), or null. */
+    private static AbstractInsnNode previousInsn(AbstractInsnNode insn) {
         AbstractInsnNode p = insn.getPrevious();
         while (p != null && p.getOpcode() < 0) {
             p = p.getPrevious();
         }
+        return p;
+    }
+
+    /** The int or String constant the instruction before {@code insn} pushes, if it is one. */
+    private static String constantBefore(AbstractInsnNode insn) {
+        AbstractInsnNode p = previousInsn(insn);
         if (p == null) {
             return null;
         }

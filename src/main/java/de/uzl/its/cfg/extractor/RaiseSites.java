@@ -128,7 +128,9 @@ final class RaiseSites {
         }
         if (stmt.isInvokableStmt() && stmt.asInvokableStmt().getInvokeExpr().isPresent()) {
             AbstractInvokeExpr invoke = stmt.asInvokableStmt().getInvokeExpr().get();
-            kinds.add("call:" + BranchKeys.nameAndDescriptor(invoke.getMethodSignature()));
+            var sig = invoke.getMethodSignature();
+            kinds.add(SiteFacts.callKind(sig.getDeclClassType().getFullyQualifiedName().replace('.', '/'), sig.getName(),
+                    DataflowFacts.descriptorOf(sig)));
         }
         return kinds;
     }

@@ -1,6 +1,7 @@
 package de.uzl.its.cfg.extractor;
 
 import de.uzl.its.cfg.model.CFGNode;
+import de.uzl.its.cfg.staticcheck.SwatHelpers;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -285,7 +286,40 @@ final class DataflowFacts {
             return;
         }
 
-        // A library call (or one of SWAT's Verifier stubs).
+        // SWAT's helpers in prepared classes (see SwatHelpers): as the call they stand for, or none.
+        SwatHelpers.Kind swat = SwatHelpers.kindOfDotted(owner, name, descriptorOf(sig));
+        switch (swat) {
+            case NONDET: {
+                Set<String> written = new LinkedHashSet<>(resultOnly);
+                written.add(INPUT);
+                Set<String> read = new LinkedHashSet<>(everything);
+                read.add(INPUT);
+                facts.pair(written, read);
+                return;
+            }
+            case ASSUME:
+                facts.terminates = true;
+                facts.control = List.copyOf(allArgs);
+                return;
+            case EXIT:
+            case RUNTIME_EXIT:
+                facts.terminates = true;
+                return;
+            case BOOKKEEPING:
+                return; // invisible to the program
+            case IDENTITY:
+                // liftValue(value, id): the value (the id is a constant)
+                facts.pair(resultOnly, args.isEmpty() ? Set.of() : args.get(0));
+                return;
+            case REF_EQUALS:
+            case INTERN:
+                facts.pair(resultOnly, everything);
+                return;
+            default:
+                break;
+        }
+
+        // A library call (or one of SV-COMP's Verifier stubs, which SWAT replaces).
         if (owner.equals(VERIFIER)) {
             if (name.startsWith("nondet")) {
                 Set<String> written = new LinkedHashSet<>(resultOnly);
@@ -376,6 +410,31 @@ final class DataflowFacts {
         }
         // An Object may be an array; any other object may hold arrays.
         return ALL_ARRAYS;
+    }
+
+    /** The JVM descriptor of a method signature. */
+    static String descriptorOf(MethodSignature sig) {
+        String nameAndDesc = BranchKeys.nameAndDescriptor(sig);
+        return nameAndDesc.substring(nameAndDesc.indexOf('('));
+    }
+
+    /**
+     * Whether a library call cannot run application code: SV-COMP's Verifier stubs, SWAT's helpers
+     * in prepared classes except the exits (which run shutdown hooks, as System.exit does), and
+     * pure library methods (see isPure), such as the boxing and the {@code new String(literal)}
+     * SWAT's preparation puts in place of literals.
+     */
+    static boolean cannotCallBack(AbstractInvokeExpr invoke) {
+        MethodSignature sig = invoke.getMethodSignature();
+        String owner = sig.getDeclClassType().getFullyQualifiedName();
+        if (owner.equals(VERIFIER)) {
+            return true;
+        }
+        SwatHelpers.Kind swat = SwatHelpers.kindOfDotted(owner, sig.getName(), descriptorOf(sig));
+        if (swat != SwatHelpers.Kind.UNMODELLED) {
+            return swat != SwatHelpers.Kind.EXIT && swat != SwatHelpers.Kind.RUNTIME_EXIT;
+        }
+        return isPure(invoke);
     }
 
     private static boolean isExit(String owner, String name) {

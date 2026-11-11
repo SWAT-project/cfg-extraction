@@ -1,5 +1,6 @@
 package de.uzl.its.cfg.extractor;
 
+import de.uzl.its.cfg.staticcheck.SwatHelpers;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -122,7 +123,11 @@ final class PseudoExceptions {
             return true;
         }
         if (stmt.isInvokableStmt() && stmt.asInvokableStmt().getInvokeExpr().isPresent()) {
-            return true;
+            // Except the helpers SWAT's preparation adds, which throw nothing (see SwatHelpers);
+            // their arguments are locals or constants.
+            var sig = stmt.asInvokableStmt().getInvokeExpr().get().getMethodSignature();
+            return !SwatHelpers.isTransparent(SwatHelpers.kindOfDotted(sig.getDeclClassType().getFullyQualifiedName(),
+                    sig.getName(), DataflowFacts.descriptorOf(sig)));
         }
         for (Value value : stmt.getUsesAndDefs()) {
             if (value instanceof JInstanceFieldRef || value instanceof JArrayRef
