@@ -52,11 +52,25 @@ public class Main {
     /** See RaiseSites: which sites cannot raise a RuntimeException; off with --no-site-facts. */
     private static boolean siteFacts = true;
 
+    /** --no-loop-facts: write no loop facts. */
+    private static boolean noLoopFacts = false;
+
+    /** --annotate-loop-facts: directories whose class files get the loop facts, or null. */
+    private static String annotateDirs = null;
+
     public static void main(String[] args) {
         // Options may come anywhere; the rest are positional.
         callbackTargets = !java.util.Arrays.asList(args).contains("--no-callback-targets");
         siteFacts = !java.util.Arrays.asList(args).contains("--no-site-facts");
-        args = java.util.Arrays.stream(args).filter(a -> !a.startsWith("--")).toArray(String[]::new);
+        // The only option with a value: the directories whose class files get the loop facts
+        java.util.List<String> rest = new java.util.ArrayList<>(java.util.Arrays.asList(args));
+        int at = rest.indexOf("--annotate-loop-facts");
+        if (at >= 0) {
+            annotateDirs = at + 1 < rest.size() ? rest.remove(at + 1) : null;
+            rest.remove(at);
+        }
+        noLoopFacts = rest.contains("--no-loop-facts");
+        args = rest.stream().filter(a -> !a.startsWith("--")).toArray(String[]::new);
         if (args.length < 2) {
             printUsage();
             System.exit(1);
@@ -82,8 +96,13 @@ public class Main {
 
             // The loop facts first: they need no SootUp view and SWAT's executor can use them
             // even if the graph is not done in time
-            if (!java.util.Arrays.asList(args).contains("--no-loop-facts")) {
+            if (!noLoopFacts) {
                 writeLoopFacts(inputPath, outputPath);
+                // Into the class files of these directories too (SWAT's prepared copies, never the
+                // task's own classes): the executor reads them from there
+                if (annotateDirs != null) {
+                    annotateLoopFacts(annotateDirs);
+                }
             }
 
             // Run analysis
@@ -115,6 +134,26 @@ public class Main {
             // Not fatal: the executor computes the facts itself
             logger.warn("Could not write the loop facts: {}", e.toString());
         }
+    }
+
+    /**
+     * Writes the loop facts of every class in the given directories into the class files
+     * themselves (de.uzl.its.cfg.loops.LoopFactsAnnotations), in place. Not fatal on failure.
+     */
+    private static void annotateLoopFacts(String dirs) {
+        long start = System.nanoTime();
+        int[] total = new int[3];
+        for (String d : dirs.split(File.pathSeparator)) {
+            if (d.isEmpty()) continue;
+            try {
+                int[] c = de.uzl.its.cfg.loops.LoopFactsAnnotations.annotateDirectory(Paths.get(d));
+                for (int k = 0; k < 3; k++) total[k] += c[k];
+            } catch (IOException | RuntimeException e) {
+                logger.warn("Could not annotate the loop facts in {}: {}", d, e.toString());
+            }
+        }
+        logger.info("Loop facts annotated: {} classes, {} methods, {} with facts, in {} ms", total[0], total[1],
+                total[2], (System.nanoTime() - start) / 1_000_000);
     }
 
     /**
@@ -338,7 +377,7 @@ public class Main {
         System.out.println();
         System.out.println("Usage:");
         System.out.println(
-                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts] [--no-loop-facts]");
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts] [--no-loop-facts] [--annotate-loop-facts <dir>:...]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");

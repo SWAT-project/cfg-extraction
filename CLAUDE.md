@@ -195,6 +195,12 @@ the executor on 2026-11-04. ASM only, no SootUp, no other dependency.
   only) to read the file and to compute the facts of methods the file lacks. A change here changes
   both after a rebuild of the executor (SWAT's `cfgLoopsJar` task rebuilds the jar when these
   sources change).
+- **Facts in the class files** (since 2026-11-11): with `--annotate-loop-facts <dir>:...` the
+  extractor also writes each method's facts into the class files of those directories, in place,
+  as an invisible method annotation `@de.uzl.its.swat.facts.LoopFacts(version, hash, facts)`
+  (`LoopFactsAnnotations`; `facts` is the method's file entry in chunks). SWAT passes its prepared
+  copies, never the task's own classes, and its executor prefers the annotation to the file. The
+  annotation name is in SWAT's namespace so that the executor's shadow jar does not relocate it.
 - **Facts are keyed by code, not by name alone.** Each method's entry has `LoopFacts.hash`, over its
   real instructions; the executor ignores facts whose hash differs. Bump `LoopFacts.VERSION` when
   the meaning or the format of the facts changes.

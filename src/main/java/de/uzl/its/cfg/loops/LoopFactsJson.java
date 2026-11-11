@@ -87,6 +87,26 @@ public final class LoopFactsJson {
         return methods;
     }
 
+    /** The facts of one method as a JSON object (the value of a method in the file). */
+    public static String writeMethod(MethodFacts f) {
+        StringBuilder sb = new StringBuilder();
+        method(sb, f);
+        return sb.toString();
+    }
+
+    /**
+     * Reads the facts of one method written by {@link #writeMethod}.
+     *
+     * @throws IllegalArgumentException if it is malformed
+     */
+    public static MethodFacts readMethod(CharSequence json) {
+        try {
+            return method((Map<?, ?>) new Parser(json).document());
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("malformed loop facts: " + e, e);
+        }
+    }
+
     // ---- writing
 
     private static void method(StringBuilder sb, MethodFacts f) {
