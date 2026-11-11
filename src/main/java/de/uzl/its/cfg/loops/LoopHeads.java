@@ -1,18 +1,21 @@
 package de.uzl.its.cfg.loops;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.List;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LookupSwitchInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TableSwitchInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.tree.analysis.Analyzer;
 import org.objectweb.asm.tree.analysis.AnalyzerException;
 import org.objectweb.asm.tree.analysis.BasicInterpreter;
@@ -21,8 +24,12 @@ import org.objectweb.asm.tree.analysis.Frame;
 
 /**
  * The loop heads of a method: the targets of backward jumps at which the operand stack is empty.
- * For each it finds which locals are defined there and of what kind: the state the executor hashes
- * at the head for loop-state matching (its LOOP_HEAD probe passes their values).
+ * For each it finds which locals are defined and live there, and of what kind: the state the
+ * executor hashes at the head for loop-state matching (its LOOP_HEAD probe passes their values).
+ *
+ * <p>A local that is dead at the head (written again before any read, on every path, exceptional
+ * ones included) cannot influence what happens from there on, so two visits that differ only in it
+ * are the same state. Leaving it out of the hash lets such states match.
  */
 public final class LoopHeads {
 
@@ -96,11 +103,27 @@ public final class LoopHeads {
             return result;
         }
         Frame<BasicValue>[] frames;
+        List<List<Integer>> successors = new ArrayList<>();
+        for (int i = 0; i < insns.size(); i++) {
+            successors.add(new ArrayList<>(2));
+        }
         try {
-            frames = new Analyzer<>(new BasicInterpreter()).analyze(owner, mn);
+            frames = new Analyzer<>(new BasicInterpreter()) {
+                @Override
+                protected void newControlFlowEdge(int insn, int successor) {
+                    successors.get(insn).add(successor);
+                }
+
+                @Override
+                protected boolean newControlFlowExceptionEdge(int insn, int successor) {
+                    successors.get(insn).add(successor);
+                    return true;
+                }
+            }.analyze(owner, mn);
         } catch (AnalyzerException | RuntimeException e) {
             return result;
         }
+        BitSet[] live = liveIn(insns, successors, mn.maxLocals);
         targets.sort((a, b) -> Integer.compare(insns.indexOf(a), insns.indexOf(b)));
         int ordinal = 0;
         for (LabelNode target : targets) {
@@ -116,6 +139,9 @@ public final class LoopHeads {
                 BasicValue v = f.getLocal(i);
                 if (v == null || v == BasicValue.UNINITIALIZED_VALUE) {
                     continue; // never read before it is written again
+                }
+                if (!live[insns.indexOf(target)].get(i)) {
+                    continue; // dead: written again before any read
                 }
                 if (v == BasicValue.RETURNADDRESS_VALUE) {
                     usable = false;
@@ -143,5 +169,49 @@ public final class LoopHeads {
                     slots.stream().mapToInt(Integer::intValue).toArray(), kinds.toString().toCharArray()));
         }
         return result;
+    }
+
+    /**
+     * The locals live on entry to each instruction (index in {@code insns}): read before they are
+     * written on some path from there. Backward fixpoint over the control flow the analyzer found,
+     * exception edges included. A local read nowhere reachable is dead everywhere.
+     */
+    static BitSet[] liveIn(InsnList insns, List<List<Integer>> successors, int maxLocals) {
+        int n = insns.size();
+        BitSet[] use = new BitSet[n];
+        BitSet[] def = new BitSet[n];
+        BitSet[] in = new BitSet[n];
+        for (int i = 0; i < n; i++) {
+            use[i] = new BitSet(maxLocals);
+            def[i] = new BitSet(maxLocals);
+            in[i] = new BitSet(maxLocals);
+            AbstractInsnNode insn = insns.get(i);
+            if (insn instanceof VarInsnNode v) {
+                switch (v.getOpcode()) {
+                    case Opcodes.ILOAD, Opcodes.LLOAD, Opcodes.FLOAD, Opcodes.DLOAD, Opcodes.ALOAD, Opcodes.RET ->
+                            use[i].set(v.var);
+                    default -> def[i].set(v.var);
+                }
+            } else if (insn instanceof IincInsnNode inc) {
+                use[i].set(inc.var);
+            }
+        }
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (int i = n - 1; i >= 0; i--) {
+                BitSet out = new BitSet(maxLocals);
+                for (int s : successors.get(i)) {
+                    out.or(in[s]);
+                }
+                out.andNot(def[i]);
+                out.or(use[i]);
+                if (!out.equals(in[i])) {
+                    in[i] = out;
+                    changed = true;
+                }
+            }
+        }
+        return in;
     }
 }

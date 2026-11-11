@@ -47,7 +47,7 @@ import org.objectweb.asm.tree.VarInsnNode;
 public final class LoopFacts {
 
     /** The version of the facts and of their file format; a file of another version is ignored. */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     /**
      * The facts of one method.
