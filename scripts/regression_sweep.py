@@ -8,6 +8,10 @@ benchmark, what the resulting inter-procedural graph looks like and whether SWAT
 
 Compiled classes are cached under --work, so a second sweep with a different jar skips javac.
 Compare two result files with --compare base.jsonl new.jsonl.
+
+With --prepare <symbolic-executor.jar>, the extractor runs on the prepared classes instead: SWAT's
+semantic rewrites applied ahead of time (de.uzl.its.swat.prepare.Prepare, with the SV-COMP
+config), as SWAT's driver gives them to the extractor.
 """
 
 from __future__ import annotations
@@ -133,7 +137,25 @@ def analyse_graph(path: Path) -> dict:
     }
 
 
-def run_one(cat: str, yml: Path, jar: str, consumer: str, work: Path, label: str) -> dict:
+SV_COMP_DIR = BENCH_ROOT.parents[1]
+
+
+def prepare_classes(classes: Path, executor_jar: str, out: Path) -> str | list[str]:
+    """Runs SWAT's preparation over the compiled classes; the prepared classpath, or an error."""
+    if out.exists():
+        subprocess.run(['rm', '-rf', str(out)], check=True)
+    res = subprocess.run(['java', '-Dconfig.path=sv-comp.cfg', '-cp', executor_jar, 'de.uzl.its.swat.prepare.Prepare',
+                          str(out), str(classes)], cwd=SV_COMP_DIR, capture_output=True, text=True, timeout=600)
+    try:
+        info = json.loads(res.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return 'prepare failed: ' + (res.stdout + res.stderr)[-300:]
+    if info.get('failed'):
+        return 'prepare failed for: ' + str(info['failed'])[:300]
+    return info['classpath']
+
+
+def run_one(cat: str, yml: Path, jar: str, consumer: str, work: Path, label: str, prepare: str | None = None) -> dict:
     rec = {'category': cat, 'benchmark': yml.stem}
     classes = compile_benchmark(cat, yml, work)
     if isinstance(classes, str):
@@ -143,11 +165,19 @@ def run_one(cat: str, yml: Path, jar: str, consumer: str, work: Path, label: str
     if not (classes / 'Main.class').exists():
         rec['status'] = 'no-main'
         return rec
+    classpath = str(classes)
+    if prepare:
+        prepared = prepare_classes(classes, prepare, work / 'prepared' / label / cat / yml.stem)
+        if isinstance(prepared, str):
+            rec['status'] = 'prepare-failed'
+            rec['error'] = prepared
+            return rec
+        classpath = os.pathsep.join(prepared)
     out = work / 'out' / label / cat / yml.stem
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     try:
-        res = subprocess.run(['java', '-ea', '-Xss64m', '-jar', jar, str(classes), str(out), 'Main', 'main', 'inter'],
+        res = subprocess.run(['java', '-ea', '-Xss64m', '-jar', jar, classpath, str(out), 'Main', 'main', 'inter'],
                              capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         rec['status'] = 'timeout'
@@ -182,8 +212,9 @@ def sweep(args):
         items = [(c, y) for c, y in items if re.search(args.filter, f'{c}/{y.stem}')]
     results = []
     with cf.ThreadPoolExecutor(args.jobs) as pool:
+        prepare = os.path.abspath(args.prepare) if args.prepare else None
         futs = {pool.submit(run_one, c, y, os.path.abspath(args.jar), os.path.abspath(args.consumer),
-                            work, args.label): (c, y) for c, y in items}
+                            work, args.label, prepare): (c, y) for c, y in items}
         for i, f in enumerate(cf.as_completed(futs), 1):
             c, y = futs[f]
             try:
@@ -273,6 +304,8 @@ if __name__ == '__main__':
     p.add_argument('--work', default=os.path.join(os.environ.get('CLAUDE_JOB_DIR', '/tmp'), 'tmp', 'sweep'))
     p.add_argument('--jobs', type=int, default=16)
     p.add_argument('--filter', help='regex over category/benchmark')
+    p.add_argument('--prepare', metavar='EXECUTOR_JAR',
+                   help="run the extractor on the classes prepared by SWAT's executor jar (de.uzl.its.swat.prepare.Prepare)")
     p.add_argument('--compare', nargs=2, metavar=('BASE', 'NEW'))
     a = p.parse_args()
     if a.compare:
