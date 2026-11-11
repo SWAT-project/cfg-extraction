@@ -34,3 +34,6 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
+
+# Prepared-class fixtures (PreparedClassesSpec): made by javac and SWAT, checked in
+!src/test/resources/prepared/**/*.class

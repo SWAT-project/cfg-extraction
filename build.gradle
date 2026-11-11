@@ -53,6 +53,9 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // PreparedClassesSpec builds SootUp views (with the JDK) in the test JVM
+    maxHeapSize = '4g'
+    jvmArgs '-Xss64m'
 }
 
 // Recorded as Implementation-Version in the jars; the pre-check reports it as "version".
