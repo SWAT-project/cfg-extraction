@@ -74,7 +74,8 @@ designs that only work for `AssertionError`.
 
 `Verifier.nondetObject(type, factory)` is not a leaf: SWAT runs it as `factory.createObject()`, so
 `ReceiverTypeResolver` dispatches it on the factory argument and `BranchKeys` keys it as
-`call:createObject()Ljava/lang/Object;`, as the executor reports it.
+`call:createObject()Ljava/lang/Object;`, as the executor reports it (in unprepared classes; prepared
+ones call `createObject()` already, see "Prepared classes").
 
 Library calls are leaf calls, but if an application method library code may call back (an
 override of a library method, a lambda) can reach an assert, every library call counts as an
@@ -97,6 +98,41 @@ effects can matter (`Relevance.summary_ok`), so it needs these facts too.
 Limitations of the facts: all library state is one location `g:lib` (a finer split, by type
 family or by allocation site with an escape check, belongs in `DataflowFacts`; see SWAT's
 swat-benchmarks/RESULTS.md, relevance "Open"), fields are by name and type (no points-to analysis).
+
+## Prepared classes
+
+SWAT's driver can run the extractor on *prepared classes*: SWAT's semantic rewrites (no-cache,
+reference equality, SV-COMP; SWAT's `de.uzl.its.swat.prepare.Prepare`) applied ahead of time, so
+that the graph, keys, site facts and loop facts describe exactly the code the executor runs.
+Prepared classes carry the invisible annotation `Lde/uzl/its/swat/Prepared;`. The extractor must
+also keep working on unprepared classes (SWAT's fallback when preparation fails).
+
+- **What the extractor sees:** calls into SWAT's classes, which are not on its classpath. Each is a
+  leaf library call; `staticcheck.SwatHelpers` says what it stands for: SWAT's
+  `Verifier.nondetX(J)` (input) and `assume(Z)` (terminator), `SystemExit` (`System.exit`,
+  `Runtime.exit/halt`), `Intrinsics.liftValue` (identity), `UtilInstrumented.refEquals` and
+  `intern`, and bookkeeping without effect (`Witness.recordValue/recordThrow`,
+  `RefIdentity.markDeInterned`). Also `new String(literal)` and `new Integer(..)` etc. in place of
+  literals and `valueOf`, `ObjectFactory.createObject()` in place of `nondetObject`, and SWAT's
+  `Socket` mock (an ordinary library class).
+- **Where they are modelled:** `DataflowFacts` (inputs, terminators, no effects), callback call
+  sites (`DataflowFacts.cannotCallBack`: the helpers, except the exits, and pure library calls are
+  not), `PseudoExceptions` (the helpers SWAT adds throw nothing), the pre-check's site facts
+  (`ExceptionFreedomCheck` models the helpers like the SV-COMP `Verifier`, so the world stays
+  closed; `Runtime.exit/halt` stay unmodelled as in the original), and `BranchKeys` (an `if` on a
+  `refEquals` result has the signature `==ref`/`!=ref`). Change `SwatHelpers` with SWAT's rewrites.
+- **The lockstep invariant holds without special cases:** the `IFEQ`/`IFNE` after `refEquals` is
+  the branch the executor reports for the original `IF_ACMP*` (same kind, same ordinal); the
+  inserted `dup`s and helper calls add no branch. On 64 sampled tasks the prepared graphs have the
+  same branches, branch keys, assertion points, runtime-exception points and terminators as the
+  original ones; only call nodes are added.
+- **Special cases that only matter for unprepared classes** (dead on prepared ones, kept for the
+  fallback): `Verifier.nondetObject` dispatched on the factory and keyed as `createObject`
+  (`ReceiverTypeResolver`, `BranchKeys`, `DataflowFacts`); the `IF_ACMP*` signature in
+  `BranchKeys`; the SV-COMP `Verifier` and `System.exit`/`Runtime.exit/halt` in `DataflowFacts`.
+- **The property pre-check proper** runs on the original classes in SWAT; on prepared ones it gives
+  the same result. `scripts/regression_sweep.py --prepare <symbolic-executor.jar>` sweeps the
+  benchmarks on prepared classes.
 
 ## Property pre-check (`staticcheck`)
 

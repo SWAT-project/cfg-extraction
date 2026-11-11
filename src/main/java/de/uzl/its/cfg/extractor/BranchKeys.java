@@ -264,7 +264,8 @@ final class BranchKeys {
     /**
      * SWAT's executor runs {@code Verifier.nondetObject(type, factory)} as the call
      * {@code factory.createObject()} (its SVCompMethodAdapter rewrites the instruction), and keys it
-     * as that call.
+     * as that call. Only unprepared classes have the original call; in prepared ones it already is
+     * {@code ObjectFactory.createObject()} (see SwatHelpers).
      */
     private static final String NONDET_OBJECT_KIND = "call:createObject()Ljava/lang/Object;";
 
@@ -415,7 +416,7 @@ final class BranchKeys {
                 return cmp + "0";
             }
             if (op == Opcodes.IF_ACMPEQ || op == Opcodes.IF_ACMPNE) {
-                return cmp + "v";
+                return cmp + "v"; // unprepared classes only: SWAT's preparation replaces them by refEquals
             }
             String c = constantBefore(insn);
             return cmp + (c == null ? "v" : c);

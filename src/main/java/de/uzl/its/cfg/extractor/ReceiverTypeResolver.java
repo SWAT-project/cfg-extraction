@@ -270,6 +270,7 @@ public class ReceiverTypeResolver {
         if (isNondetObject(declared)) {
             // SWAT rewrites Verifier.nondetObject(type, factory) into factory.createObject() (see
             // its SVCompMethodAdapter), so the call runs the factory, dispatched on the argument.
+            // Unprepared classes only: prepared ones call createObject() on the factory already.
             ClassType factory = view.getIdentifierFactory().getClassType(OBJECT_FACTORY);
             MethodSignature createObject = view.getIdentifierFactory().getMethodSignature(factory, "createObject",
                     view.getIdentifierFactory().getClassType("java.lang.Object"), List.of());

@@ -131,7 +131,8 @@ public class IntraProceduralCFGExtractor implements CFGExtractor {
         // SWAT rewrites every IF_ACMP* into a call to its helper UtilInstrumented.refEquals, whose
         // branches depend on the runtime types of the operands. They are not in the graph: SWAT
         // reports them like callbacks, which the walk holds its place for, so the comparison is
-        // just its own JIfStmt here.
+        // just its own JIfStmt here. In prepared classes the call and the if on its result are in
+        // the bytecode already: the call is a leaf library call (SwatHelpers), the if the branch.
 
         SwitchChainEmitter switchEmitter = new SwitchChainEmitter(cfg);
 
