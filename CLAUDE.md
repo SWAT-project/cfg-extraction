@@ -204,6 +204,8 @@ the executor on 2026-11-04. ASM only, no SootUp, no other dependency.
 - **Facts are keyed by code, not by name alone.** Each method's entry has `LoopFacts.hash`, over its
   real instructions; the executor ignores facts whose hash differs. Bump `LoopFacts.VERSION` when
   the meaning or the format of the facts changes.
+- **Heads hash live locals only** (`LoopHeads.liveIn`, since `VERSION` 2): a local dead at the head
+  is left out; liveness follows the analyzer's control flow, exception edges included.
 - **Positions.** Jumps are named by their ordinal among the method's jump instructions, labels by
   the number of real instructions before them (`Positions`), so that the facts do not depend on
   how the class was read (frames, debug info). Join ids are unique per method.
