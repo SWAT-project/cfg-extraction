@@ -97,7 +97,8 @@ static slice) and stops flipping those. Loop summarization lives in SWAT's execu
 effects can matter (`Relevance.summary_ok`), so it needs these facts too.
 Limitations of the facts: all library state is one location `g:lib` (a finer split, by type
 family or by allocation site with an escape check, belongs in `DataflowFacts`; see SWAT's
-swat-benchmarks/RESULTS.md, relevance "Open"), fields are by name and type (no points-to analysis).
+swat-benchmarks/RESULTS.md, relevance "Open"; hand-written library facts split it by family, see
+"Hand-written facts"), fields are by name and type (no points-to analysis).
 
 ## Prepared classes
 
@@ -219,6 +220,43 @@ the executor on 2026-11-04. ASM only, no SootUp, no other dependency.
   elsewhere, this must follow, or summaries become unsound.
 - **Tests:** `./gradlew test --tests 'de.uzl.its.cfg.loops.*'`. `LoopFactsSpec` checks the
   round trip through the file and that facts and hash do not depend on how a class was read.
+
+## Hand-written facts (`facts`, `--user-facts`)
+
+SWAT's user facts (since 2026-11-13 also in the extractor): annotations of SWAT's annotations
+module in the program's class files, and library facts in a stub file. Read only with
+`--user-facts` (`facts/UserFacts.read`, ASM, prepared or original classes alike), which SWAT passes
+only with its own `--user-facts`, never for SV-COMP. Without the option nothing here changes the
+graph.
+
+- **`@Target`** (method): its entry node is an assertion point. The property pre-check reads it
+  too (`ExceptionFreedomCheck.assertionCreation`: a reachable `@Target` method is not
+  assertion-free), with or without the option. SWAT's prepared classes start the method with a call
+  to `UserFacts.target` (an unmodelled SWAT helper: open world for the pre-check), and keep its
+  code.
+- **`@Irrelevant`** (class, method, constructor) and **`Swat.beginIrrelevant/endIrrelevant`**
+  regions (the lines strictly between the two calls): their nodes get `userFact`, named as SWAT's
+  executor names the fact. SWAT's relevance analysis checks and uses them (SWAT's CLAUDE.md).
+- **`Swat.summary()`** (or `UserFacts.summary(String)` in prepared classes): the `if` on its result
+  gets `deadSide` (the edge type of the loop's side, which never runs while SWAT runs with user
+  facts) and `summaryFact`. SWAT replaces that edge's target by a dead end. The branch stays, so
+  the lockstep walk is unchanged.
+- **`@NotCalledBack`** (method): left out of `CallbackTargets.candidates`, so it neither makes
+  library calls assertion points nor adds callback effects.
+- **Library facts** (`facts/LibraryFacts`): `swat-library-facts.txt` at the root of a classpath
+  directory (Prepare copies it), one library method per line with `reads=`/`writes=` families,
+  `arrays`, `nocallback`, `pure`. `DataflowFacts`: a call with facts reads and writes
+  `g:lib:<family>` (writes are read too: a may-write), its arguments flow into its result, and
+  unless `nocallback` it gets the callbacks' effects; every other library call, and every library
+  constructor, reads and writes `g:lib` and every family. `cannotCallBack` is true for
+  `nocallback`. A malformed line rejects the file (the extraction fails, SWAT runs without SA).
+- **Metadata:** `userFacts` lists the facts read and the library entries used (SWAT counts those,
+  and `@NotCalledBack`, as assumptions of a SAFE verdict).
+- **Not done** (2026-11-13, see SWAT's RESULTS.md): aliasing facts (locations have no object
+  identity to refine), dispatch facts, exception facts (`@NoThrow`), hidden entry points, input
+  domains, loop invariants.
+- **Tests:** `facts/UserFactsSpec` (the stub format, the annotation reader); end to end SWAT's
+  swat-benchmarks `extractor-facts`.
 
 ## SootUp traps
 
