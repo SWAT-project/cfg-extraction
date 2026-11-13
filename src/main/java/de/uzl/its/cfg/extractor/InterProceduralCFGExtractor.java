@@ -209,10 +209,13 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                     continue;
                 }
                 for (var r : regions) {
-                    // The lines strictly between the markers: a statement on a marker's line may be
-                    // outside the region, and leaving one out only uses the fact less
-                    if (node.getLineNumber() > r.beginLine() && node.getLineNumber() < r.endLine()) {
+                    // By line: a line whose instructions are all in the region is covered; one with
+                    // instructions on both sides is only near it (used to check the fact, never to
+                    // apply it)
+                    if (r.lines().contains(node.getLineNumber())) {
                         node.setUserFact(r.fact());
+                    } else if (r.nearLines().contains(node.getLineNumber())) {
+                        node.setUserFactNear(r.fact());
                     }
                 }
             }

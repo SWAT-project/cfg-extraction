@@ -49,14 +49,24 @@ class UserFactsSpec extends Specification {
         m.visitAnnotation(UserFacts.TARGET, false).visitEnd()
         m.visitAnnotation(UserFacts.NOT_CALLED_BACK, false).visitEnd()
         m.visitCode(); m.visitInsn(Opcodes.RETURN); m.visitMaxs(0, 0); m.visitEnd()
+        // line 10: begin; 11: in the region; 12: in it, then end, then outside; 13: a second region
+        // without an end, to the end of the method
         m = cw.visitMethod(Opcodes.ACC_STATIC, "main", "()V", null, null)
         m.visitCode()
         def l1 = new org.objectweb.asm.Label(), l2 = new org.objectweb.asm.Label()
+        def l3 = new org.objectweb.asm.Label(), l4 = new org.objectweb.asm.Label()
         m.visitLabel(l1); m.visitLineNumber(10, l1)
         m.visitMethodInsn(Opcodes.INVOKESTATIC, UserFacts.SWAT, "beginIrrelevant", "()V", false)
-        m.visitLabel(l2); m.visitLineNumber(14, l2)
+        m.visitLabel(l2); m.visitLineNumber(11, l2)
+        m.visitInsn(Opcodes.ICONST_0); m.visitInsn(Opcodes.POP)
+        m.visitLabel(l3); m.visitLineNumber(12, l3)
+        m.visitInsn(Opcodes.ICONST_1); m.visitInsn(Opcodes.POP)
         m.visitMethodInsn(Opcodes.INVOKESTATIC, UserFacts.SWAT, "endIrrelevant", "()V", false)
-        m.visitInsn(Opcodes.RETURN); m.visitMaxs(0, 0); m.visitEnd()
+        m.visitInsn(Opcodes.ICONST_2); m.visitInsn(Opcodes.POP)
+        m.visitLabel(l4); m.visitLineNumber(13, l4)
+        m.visitMethodInsn(Opcodes.INVOKESTATIC, UserFacts.SWAT, "beginIrrelevant", "()V", false)
+        m.visitInsn(Opcodes.ICONST_3); m.visitInsn(Opcodes.POP)
+        m.visitInsn(Opcodes.RETURN); m.visitMaxs(1, 0); m.visitEnd()
         cw.visitEnd()
         def facts = new UserFacts()
 
@@ -68,7 +78,8 @@ class UserFactsSpec extends Specification {
         facts.irrelevantFact("app/C", "main", "()V") == null
         facts.target("app/C", "sink", "()V") == "@Target app/C.sink()V"
         facts.isNotCalledBack("app/C", "sink", "()V")
-        facts.regions("app/C", "main", "()V") == [new UserFacts.Region("app/C.main()V", 10, 14,
-                "Swat.beginIrrelevant app/C.main()V line 10")]
+        facts.regions("app/C", "main", "()V") == [
+                new UserFacts.Region("app/C.main()V", 10, [11] as Set, [12] as Set, "Swat.beginIrrelevant app/C.main()V line 10"),
+                new UserFacts.Region("app/C.main()V", 13, [] as Set, [13] as Set, "Swat.beginIrrelevant app/C.main()V line 13")]
     }
 }

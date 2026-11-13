@@ -170,14 +170,14 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
                 assertionFree, assertion);
     }
 
+    /** SWAT's {@code @Target} annotation (built at run time, so that no relocation rewrites it). */
+    private static final String USER_TARGET = "Lde/uzl/its/".concat("swat/annotations/Target;");
+
     /**
      * Where reachable code may create an AssertionError (null if nowhere). With a closed world,
      * only application code creates objects of application classes or of AssertionError: the
      * modelled library methods create none, and no assert of the JDK is enabled.
      */
-    /** SWAT's {@code @Target} annotation (built at run time, so that no relocation rewrites it). */
-    private static final String USER_TARGET = "Lde/uzl/its/".concat("swat/annotations/Target;");
-
     private String assertionCreation(Set<Program.Method> reachable) {
         for (Program.Method m : reachable) {
             // A hand-written target (SWAT's user facts, @Target): reaching the method is a violation.

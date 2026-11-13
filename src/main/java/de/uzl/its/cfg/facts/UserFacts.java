@@ -54,8 +54,14 @@ public final class UserFacts {
     /** The library facts file, at the root of a classpath directory. */
     public static final String STUB_FILE = "swat-library-facts.txt";
 
-    /** A {@code Swat.beginIrrelevant/endIrrelevant} region: the lines strictly between the two calls. */
-    public record Region(String method, int beginLine, int endLine, String fact) {}
+    /**
+     * A {@code Swat.beginIrrelevant/endIrrelevant} region: the instructions from the begin call to
+     * the end call in bytecode order, or to the end of the method without one (as SWAT's executor
+     * applies it). By line: {@code lines} have only instructions in the region, {@code nearLines}
+     * have some in it and some outside (the graph cannot tell those statements apart by line).
+     */
+    public record Region(String method, int beginLine, java.util.Set<Integer> lines, java.util.Set<Integer> nearLines,
+            String fact) {}
 
     /** The facts in effect: none unless {@link #install} was called. */
     private static UserFacts current = new UserFacts();
@@ -119,12 +125,27 @@ public final class UserFacts {
         return d;
     }
 
-    /** Reads the facts of every class and stub file on the classpath (directories and jars' names are skipped). */
+    /** Reads the facts of every class on the classpath (directories and jars) and the stub files of its directories. */
     public static UserFacts read(List<Path> classpath) throws IOException {
         UserFacts facts = new UserFacts();
         facts.enabled = true;
         List<LibraryFacts> stubs = new ArrayList<>();
         for (Path entry : classpath) {
+            if (Files.isRegularFile(entry) && (entry.toString().endsWith(".jar") || entry.toString().endsWith(".zip"))) {
+                // Annotations in a jar's classes count too (no stub file there)
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(entry.toFile())) {
+                    for (java.util.zip.ZipEntry e : java.util.Collections.list(zip.entries())) {
+                        if (e.getName().endsWith(".class") && !e.isDirectory()) {
+                            try (InputStream in = zip.getInputStream(e)) {
+                                facts.readClass(in.readAllBytes());
+                            } catch (RuntimeException ex) {
+                                // an unreadable class has no facts
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             if (!Files.isDirectory(entry)) {
                 continue;
             }
@@ -171,21 +192,50 @@ public final class UserFacts {
                 notCalledBack.add(k);
             }
             int line = -1;
-            Integer begin = null;
             String fact = null;
+            int begin = -1;
+            java.util.Set<Integer> in = new java.util.TreeSet<>();
+            java.util.Set<Integer> outside = new java.util.TreeSet<>(); // lines with instructions outside any region
             for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
                 if (n instanceof LineNumberNode l) {
                     line = l.line;
-                } else if (n instanceof MethodInsnNode m && m.getOpcode() == Opcodes.INVOKESTATIC
-                        && m.owner.equals(SWAT) && m.desc.equals("()V")) {
-                    if (m.name.equals("beginIrrelevant")) {
+                    continue;
+                }
+                if (n.getOpcode() < 0) {
+                    continue; // labels, frames
+                }
+                boolean marker = n instanceof MethodInsnNode m && m.getOpcode() == Opcodes.INVOKESTATIC
+                        && m.owner.equals(SWAT) && m.desc.equals("()V")
+                        && (m.name.equals("beginIrrelevant") || m.name.equals("endIrrelevant"));
+                if (marker) {
+                    if (fact != null) {
+                        regions.add(new Region(k, begin, in, java.util.Set.of(), fact));
+                    }
+                    fact = null;
+                    in = new java.util.TreeSet<>();
+                    if (((MethodInsnNode) n).name.equals("beginIrrelevant")) {
                         begin = line;
                         fact = "Swat.beginIrrelevant " + k + " line " + line; // as SWAT's executor names it
-                    } else if (m.name.equals("endIrrelevant") && begin != null) {
-                        regions.add(new Region(k, begin, line, fact));
-                        begin = null;
                     }
+                    outside.add(line); // the marker call itself is not in the region
+                    continue;
                 }
+                (fact != null ? in : outside).add(line);
+            }
+            if (fact != null) {
+                regions.add(new Region(k, begin, in, java.util.Set.of(), fact)); // no end: to the end of the method
+            }
+            // A line with instructions both in and outside a region is only near it
+            for (int i = 0; i < regions.size(); i++) {
+                Region r = regions.get(i);
+                if (!r.method().equals(k)) {
+                    continue;
+                }
+                java.util.Set<Integer> strict = new java.util.TreeSet<>(r.lines());
+                strict.removeAll(outside);
+                java.util.Set<Integer> near = new java.util.TreeSet<>(r.lines());
+                near.retainAll(outside);
+                regions.set(i, new Region(k, r.beginLine(), strict, near, r.fact()));
             }
         }
     }

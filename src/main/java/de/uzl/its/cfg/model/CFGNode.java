@@ -88,6 +88,7 @@ public class CFGNode {
      * {@code summaryFact} names that summary.
      */
     private String userFact;
+    private String userFactNear;
     private String deadSide;
     private String summaryFact;
 
@@ -97,6 +98,18 @@ public class CFGNode {
 
     public void setUserFact(String userFact) {
         this.userFact = userFact;
+    }
+
+    /**
+     * The region fact whose code shares this node's line with code outside it: the executor may
+     * apply the fact to it, so SWAT checks the fact against it too, but never applies it.
+     */
+    public String getUserFactNear() {
+        return userFactNear;
+    }
+
+    public void setUserFactNear(String userFactNear) {
+        this.userFactNear = userFactNear;
     }
 
     public String getDeadSide() {

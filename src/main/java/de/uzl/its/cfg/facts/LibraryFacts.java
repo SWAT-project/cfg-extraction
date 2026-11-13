@@ -63,10 +63,18 @@ public final class LibraryFacts {
     public static final LibraryFacts NONE = new LibraryFacts(List.of());
 
     private final List<Entry> entries;
+    /** The entries by owner and name, and every family named: built once, looked up per call. */
+    private final Map<String, List<Entry>> byMethod = new java.util.HashMap<>();
+    private final Set<String> families = new TreeSet<>();
     private final Set<String> used = new TreeSet<>();
 
     private LibraryFacts(List<Entry> entries) {
         this.entries = entries;
+        for (Entry e : entries) {
+            byMethod.computeIfAbsent(e.owner() + "." + e.name(), k -> new ArrayList<>()).add(e);
+            families.addAll(e.reads());
+            families.addAll(e.writes());
+        }
     }
 
     public boolean isEmpty() {
@@ -75,12 +83,7 @@ public final class LibraryFacts {
 
     /** Every family the facts name (sorted). */
     public Set<String> families() {
-        Set<String> families = new TreeSet<>();
-        for (Entry e : entries) {
-            families.addAll(e.reads());
-            families.addAll(e.writes());
-        }
-        return families;
+        return java.util.Collections.unmodifiableSet(families);
     }
 
     /**
@@ -90,7 +93,7 @@ public final class LibraryFacts {
      */
     public Entry lookup(String owner, String name, List<String> params) {
         Entry wildcard = null;
-        for (Entry e : entries) {
+        for (Entry e : byMethod.getOrDefault(owner + "." + name, List.of())) {
             if (e.matches(owner, name, params)) {
                 if (e.params() != null) {
                     used.add(e.text());

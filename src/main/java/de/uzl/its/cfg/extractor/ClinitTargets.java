@@ -121,6 +121,9 @@ final class ClinitTargets {
         seen.add(start.getSignature());
         while (!work.isEmpty()) {
             SootMethod method = work.poll();
+            if (isUserTarget(method)) {
+                return true; // a hand-written @Target (user facts): its entry is an assertion point
+            }
             if (!method.hasBody()) {
                 continue;
             }
@@ -179,6 +182,13 @@ final class ClinitTargets {
                 .forEach(t -> view.getClass(t).flatMap(c -> c.getMethodsByName("<clinit>").stream()
                         .map(m -> (SootMethod) m).findFirst()).ifPresent(result::add));
         return result;
+    }
+
+    /** A method a hand-written fact makes a target (user facts, {@code @Target}). */
+    static boolean isUserTarget(SootMethod method) {
+        de.uzl.its.cfg.facts.UserFacts facts = de.uzl.its.cfg.facts.UserFacts.current();
+        return facts.enabled() && facts.target(method.getDeclaringClassType().getFullyQualifiedName().replace('.', '/'),
+                method.getName(), IntraProceduralCFGExtractor.jvmDescriptor(method)) != null;
     }
 
     private static boolean isAssertionAllocation(Stmt stmt) {
