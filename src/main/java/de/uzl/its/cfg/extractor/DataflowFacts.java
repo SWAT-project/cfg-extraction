@@ -1,5 +1,7 @@
 package de.uzl.its.cfg.extractor;
 
+import de.uzl.its.cfg.facts.LibraryFacts;
+import de.uzl.its.cfg.facts.UserFacts;
 import de.uzl.its.cfg.model.CFGNode;
 import de.uzl.its.cfg.staticcheck.SwatHelpers;
 import java.util.ArrayDeque;
@@ -349,6 +351,29 @@ final class DataflowFacts {
             facts.pair(written, read);
             return;
         }
+        LibraryFacts.Entry stub = libraryFact(invoke);
+        if (stub != null) {
+            // Hand-written library facts (user facts): only the families they name
+            Set<String> written = new LinkedHashSet<>(resultOnly);
+            Set<String> read = new LinkedHashSet<>(everything);
+            for (String f : stub.writes()) {
+                written.add(LibraryFacts.location(f));
+                read.add(LibraryFacts.location(f)); // a write may keep part of the old state
+            }
+            stub.reads().forEach(f -> read.add(LibraryFacts.location(f)));
+            if (stub.arrays()) {
+                Effects arrays = libraryHeapEffects(invoke);
+                arrays.writes.removeIf(DataflowFacts::isLibraryState);
+                arrays.reads.removeIf(DataflowFacts::isLibraryState);
+                written.addAll(arrays.writes);
+                read.addAll(arrays.reads);
+            }
+            facts.pair(written, read);
+            if (!stub.noCallback() && withCallbacks) {
+                facts.add(callbackEffects());
+            }
+            return;
+        }
         if (isPure(invoke)) {
             facts.pair(resultOnly, everything);
             return;
@@ -361,7 +386,7 @@ final class DataflowFacts {
         if (name.equals("<init>") && sig.getParameterTypes().stream().allMatch(DataflowFacts::isValueTypeOrPrimitiveArray)) {
             // A library constructor given no application object (an exception with a message, a
             // StringBuilder): it initializes a new library object and runs no application code.
-            facts.pair(Set.of(LIB), everything);
+            facts.pair(allLibraryState(), everything);
             return;
         }
         Effects effects = libraryHeapEffects(invoke);
@@ -379,8 +404,8 @@ final class DataflowFacts {
     /** What a library call that may change library state does, apart from callbacks. */
     private static Effects libraryHeapEffects(AbstractInvokeExpr invoke) {
         Effects effects = new Effects();
-        effects.writes.add(LIB);
-        effects.reads.add(LIB);
+        effects.writes.addAll(allLibraryState());
+        effects.reads.addAll(allLibraryState());
         List<Value> passed = new ArrayList<>(invoke.getArgs());
         if (invoke instanceof AbstractInstanceInvokeExpr instance) {
             passed.add(instance.getBase());
@@ -390,6 +415,34 @@ final class DataflowFacts {
             effects.reads.addAll(arraysIn(value.getType()));
         }
         return effects;
+    }
+
+    /**
+     * All library state: {@link #LIB}, and with hand-written library facts every family they name
+     * (a library method without facts may touch any of it).
+     */
+    private static Set<String> allLibraryState() {
+        Set<String> all = new LinkedHashSet<>();
+        all.add(LIB);
+        for (String f : UserFacts.current().library().families()) {
+            all.add(LibraryFacts.location(f));
+        }
+        return all;
+    }
+
+    static boolean isLibraryState(String location) {
+        return location.equals(LIB) || location.startsWith("g:lib:");
+    }
+
+    /** The hand-written facts of a library method (user facts), or null. */
+    static LibraryFacts.Entry libraryFact(AbstractInvokeExpr invoke) {
+        LibraryFacts library = UserFacts.current().library();
+        if (library.isEmpty() || invoke instanceof JDynamicInvokeExpr) {
+            return null;
+        }
+        MethodSignature sig = invoke.getMethodSignature();
+        return library.lookup(sig.getDeclClassType().getFullyQualifiedName(), sig.getName(),
+                sig.getParameterTypes().stream().map(Type::toString).toList());
     }
 
     /** The array locations a value of {@code type} may give access to. */
@@ -433,6 +486,10 @@ final class DataflowFacts {
         SwatHelpers.Kind swat = SwatHelpers.kindOfDotted(owner, sig.getName(), descriptorOf(sig));
         if (swat != SwatHelpers.Kind.UNMODELLED) {
             return swat != SwatHelpers.Kind.EXIT && swat != SwatHelpers.Kind.RUNTIME_EXIT;
+        }
+        LibraryFacts.Entry stub = libraryFact(invoke);
+        if (stub != null && stub.noCallback()) {
+            return true; // a hand-written fact (user facts)
         }
         return isPure(invoke);
     }
@@ -575,7 +632,8 @@ final class DataflowFacts {
                     for (List<List<String>> pair : scratch.getDataflow()) {
                         pair.get(0).stream().filter(DataflowFacts::isGlobal).forEach(effects.writes::add);
                         pair.get(1).stream().filter(DataflowFacts::isGlobal).forEach(effects.reads::add);
-                        if (!callbacksQueued && pair.get(0).contains(LIB)) {
+                        if (!callbacksQueued && (pair.get(0).contains(LIB) || invoke.isPresent()
+                                && kind == CallKind.LIBRARY && mayCallBackByFact(invoke.get()))) {
                             callbacksQueued = true;
                             next.addAll(CallbackTargets.candidates(view));
                         }
@@ -628,6 +686,12 @@ final class DataflowFacts {
         if (facts.terminates) {
             node.setTerminates(true);
         }
+    }
+
+    /** A library call whose hand-written facts (user facts) do not rule out a callback. */
+    private static boolean mayCallBackByFact(AbstractInvokeExpr invoke) {
+        LibraryFacts.Entry stub = libraryFact(invoke);
+        return stub != null && !stub.noCallback();
     }
 
     static boolean isGlobal(String location) {

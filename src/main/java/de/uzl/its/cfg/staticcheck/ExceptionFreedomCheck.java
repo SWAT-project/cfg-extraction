@@ -175,8 +175,17 @@ public final class ExceptionFreedomCheck implements FactInterpreter.Facts, Opcod
      * only application code creates objects of application classes or of AssertionError: the
      * modelled library methods create none, and no assert of the JDK is enabled.
      */
+    /** SWAT's {@code @Target} annotation (built at run time, so that no relocation rewrites it). */
+    private static final String USER_TARGET = "Lde/uzl/its/".concat("swat/annotations/Target;");
+
     private String assertionCreation(Set<Program.Method> reachable) {
         for (Program.Method m : reachable) {
+            // A hand-written target (SWAT's user facts, @Target): reaching the method is a violation.
+            // Read whether or not SWAT runs with user facts: it can only make the check prove less.
+            if (m.node.invisibleAnnotations != null && m.node.invisibleAnnotations.stream()
+                    .anyMatch(a -> a.desc.equals(USER_TARGET))) {
+                return m.key + ": a @Target";
+            }
             Frame<AbsValue>[] f = frames.get(m.key);
             AbstractInsnNode[] insns = m.node.instructions.toArray();
             for (int i = 0; i < insns.length; i++) {

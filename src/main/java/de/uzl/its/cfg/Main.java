@@ -70,6 +70,7 @@ public class Main {
             rest.remove(at);
         }
         noLoopFacts = rest.contains("--no-loop-facts");
+        boolean userFacts = rest.contains("--user-facts");
         args = rest.stream().filter(a -> !a.startsWith("--")).toArray(String[]::new);
         if (args.length < 2) {
             printUsage();
@@ -103,6 +104,20 @@ public class Main {
                 if (annotateDirs != null) {
                     annotateLoopFacts(annotateDirs);
                 }
+            }
+
+            // Hand-written facts (SWAT's user facts; never for SV-COMP): annotations in the classes,
+            // library facts in a stub file next to them
+            if (userFacts) {
+                List<Path> classpath = new java.util.ArrayList<>();
+                for (String entry : inputPath.split(File.pathSeparator)) {
+                    if (!entry.isEmpty()) {
+                        classpath.add(Paths.get(entry));
+                    }
+                }
+                de.uzl.its.cfg.facts.UserFacts facts = de.uzl.its.cfg.facts.UserFacts.read(classpath);
+                de.uzl.its.cfg.facts.UserFacts.install(facts);
+                logger.info("User facts: {}", facts.describe());
             }
 
             // Run analysis
@@ -377,7 +392,7 @@ public class Main {
         System.out.println();
         System.out.println("Usage:");
         System.out.println(
-                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts] [--no-loop-facts] [--annotate-loop-facts <dir>:...]");
+                "  java -jar cfg-extractor.jar <input-path> <output-dir> [entry-class] [entry-method] [analysis-type] [--no-callback-targets] [--no-site-facts] [--no-loop-facts] [--annotate-loop-facts <dir>:...] [--user-facts]");
         System.out.println();
         System.out.println("Arguments:");
         System.out.println("  input-path    : Directory containing .class files (e.g., target/)");

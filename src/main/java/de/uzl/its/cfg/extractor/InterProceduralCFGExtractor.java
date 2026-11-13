@@ -158,6 +158,11 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
             }
         }
 
+        de.uzl.its.cfg.facts.UserFacts userFacts = de.uzl.its.cfg.facts.UserFacts.current();
+        if (userFacts.enabled()) {
+            // Read last: the library facts list the entries the graph used
+            combinedCFG.addMetadata("userFacts", userFacts.describe());
+        }
         combinedCFG.addMetadata("assertionPointIds", this.assertionPointIds);
         combinedCFG.addMetadata("runtimeExceptionPointIds", runtimeExceptionPoints(combinedCFG));
         if (siteFacts != null) {
@@ -178,6 +183,96 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
                 combinedCFG.getEdges().size());
 
         return combinedCFG;
+    }
+
+    /**
+     * Applies the hand-written facts of a method (see de.uzl.its.cfg.facts.UserFacts): its entry is
+     * an assertion point if it is a {@code @Target}; its nodes carry the irrelevance fact covering
+     * them ({@code userFact}); a branch on {@code Swat.summary()} names its dead side.
+     */
+    private void applyUserFacts(SootMethod method, String entryId, Map<String, CFGNode> nodes,
+            Map<Stmt, String> nodeIdsByStmt, Map<String, String> oldToNewId) {
+        de.uzl.its.cfg.facts.UserFacts facts = de.uzl.its.cfg.facts.UserFacts.current();
+        String owner = method.getDeclaringClassType().getFullyQualifiedName().replace('.', '/');
+        String desc = IntraProceduralCFGExtractor.jvmDescriptor(method);
+        String target = facts.target(owner, method.getName(), desc);
+        if (target != null && entryId != null) {
+            logger.info("{}: its entry is an assertion point", target);
+            assertionPointIds.add(entryId);
+        }
+        String whole = facts.irrelevantFact(owner, method.getName(), desc);
+        var regions = facts.regions(owner, method.getName(), desc);
+        if (whole != null || !regions.isEmpty()) {
+            for (CFGNode node : nodes.values()) {
+                if (whole != null) {
+                    node.setUserFact(whole);
+                    continue;
+                }
+                for (var r : regions) {
+                    // The lines strictly between the markers: a statement on a marker's line may be
+                    // outside the region, and leaving one out only uses the fact less
+                    if (node.getLineNumber() > r.beginLine() && node.getLineNumber() < r.endLine()) {
+                        node.setUserFact(r.fact());
+                    }
+                }
+            }
+        }
+        for (Stmt stmt : method.getBody().getControlFlowGraph().getStmts()) {
+            if (!(stmt instanceof sootup.core.jimple.common.stmt.JIfStmt ifStmt)) {
+                continue;
+            }
+            String[] dead = summaryDeadSide(method, ifStmt);
+            String id = dead == null ? null : oldToNewId.get(nodeIdsByStmt.get(stmt));
+            if (id != null && nodes.get(id) != null) {
+                logger.info("{}: the {} side of '{}' never runs", dead[1], dead[0], stmt);
+                nodes.get(id).setDeadSide(dead[0], dead[1]);
+            }
+        }
+    }
+
+    /**
+     * For an {@code if} on the result of {@code Swat.summary()} (or SWAT's replacement {@code
+     * UserFacts.summary(String)}), which returns true while SWAT runs with user facts: the edge
+     * type of the side that never runs and the summary's name; else null.
+     */
+    private static String[] summaryDeadSide(SootMethod method, sootup.core.jimple.common.stmt.JIfStmt ifStmt) {
+        var cond = ifStmt.getCondition();
+        if (!(cond instanceof sootup.core.jimple.common.expr.JEqExpr || cond instanceof sootup.core.jimple.common.expr.JNeExpr)) {
+            return null;
+        }
+        var op1 = cond.getOp1();
+        var op2 = cond.getOp2();
+        if (!(op1 instanceof sootup.core.jimple.common.Local local && op2 instanceof sootup.core.jimple.common.constant.IntConstant c)) {
+            return null;
+        }
+        String name = null;
+        int defs = 0;
+        for (Stmt s : method.getBody().getControlFlowGraph().getStmts()) {
+            if (s instanceof sootup.core.jimple.common.stmt.JAssignStmt assign && assign.getLeftOp().equals(local)) {
+                defs++;
+                Optional<AbstractInvokeExpr> invoke = s.isInvokableStmt() ? s.asInvokableStmt().getInvokeExpr() : Optional.empty();
+                if (invoke.isEmpty()) {
+                    return null;
+                }
+                MethodSignature sig = invoke.get().getMethodSignature();
+                String owner = sig.getDeclClassType().getFullyQualifiedName().replace('.', '/');
+                String nd = BranchKeys.nameAndDescriptor(sig);
+                if (owner.equals(de.uzl.its.cfg.facts.UserFacts.SWAT) && nd.equals("summary()Z")) {
+                    name = "Swat.summary in " + method.getSignature() + " line " + PhantomGuardEmitter.lineNumberOf(s);
+                } else if (owner.equals(de.uzl.its.cfg.facts.UserFacts.SWAT_USER_FACTS) && nd.equals("summary(Ljava/lang/String;)Z")
+                        && invoke.get().getArg(0) instanceof sootup.core.jimple.common.constant.StringConstant id) {
+                    name = id.getValue();
+                } else {
+                    return null;
+                }
+            }
+        }
+        if (defs != 1 || name == null) {
+            return null; // javac assigns the result once; anything else is not the pattern
+        }
+        // The summary returns true (1): the condition decides which side runs
+        boolean holds = cond instanceof sootup.core.jimple.common.expr.JEqExpr ? c.getValue() == 1 : c.getValue() != 1;
+        return new String[] {holds ? "FALSE_BRANCH" : "TRUE_BRANCH", name};
     }
 
     private void extractMethodRecursively(SootMethod method, ControlFlowGraph combinedCFG, int depth) {
@@ -234,6 +329,12 @@ public class InterProceduralCFGExtractor implements CFGExtractor {
         if (methodAssertionPointIds != null) {
             var newIds = methodAssertionPointIds.stream().map(oldToNewId::get).collect(Collectors.toList());
             this.assertionPointIds.addAll(newIds);
+        }
+
+        // Hand-written facts (user facts): targets, irrelevant code, summaries
+        if (de.uzl.its.cfg.facts.UserFacts.current().enabled()) {
+            applyUserFacts(method, methodCFG.getEntryNodeId() == null ? null : oldToNewId.get(methodCFG.getEntryNodeId()),
+                    newNodes, nodeIdsByStmt, oldToNewId);
         }
 
         // Statements that may run a static initializer that can reach an assert. Static

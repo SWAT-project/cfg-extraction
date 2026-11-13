@@ -79,6 +79,39 @@ public class CFGNode {
     private Boolean terminates;
     private java.util.Map<String, Object> call;
 
+    /**
+     * Hand-written facts (user facts, see de.uzl.its.cfg.facts.UserFacts), only with
+     * {@code --user-facts}: {@code userFact} names the irrelevance fact ({@code @Irrelevant} or a
+     * {@code Swat.beginIrrelevant} region) that covers the node; {@code deadSide} on the branch
+     * that tests {@code Swat.summary()} names the edge type ({@code TRUE_BRANCH} or
+     * {@code FALSE_BRANCH}) of the side that never runs, the loop the summary replaces, and
+     * {@code summaryFact} names that summary.
+     */
+    private String userFact;
+    private String deadSide;
+    private String summaryFact;
+
+    public String getUserFact() {
+        return userFact;
+    }
+
+    public void setUserFact(String userFact) {
+        this.userFact = userFact;
+    }
+
+    public String getDeadSide() {
+        return deadSide;
+    }
+
+    public void setDeadSide(String deadSide, String summaryFact) {
+        this.deadSide = deadSide;
+        this.summaryFact = summaryFact;
+    }
+
+    public String getSummaryFact() {
+        return summaryFact;
+    }
+
     public List<List<List<String>>> getDataflow() {
         return dataflow;
     }

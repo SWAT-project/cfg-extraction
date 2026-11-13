@@ -46,8 +46,23 @@ final class CallbackTargets {
         return result;
     }
 
-    /** Overrides and implementations of library methods, and lambda and method-reference targets. */
+    /**
+     * Overrides and implementations of library methods, and lambda and method-reference targets;
+     * without those a hand-written fact (user facts, {@code @NotCalledBack}) says library code
+     * never calls.
+     */
     static Set<SootMethod> candidates(JavaView view) {
+        Set<SootMethod> candidates = allCandidates(view);
+        de.uzl.its.cfg.facts.UserFacts facts = de.uzl.its.cfg.facts.UserFacts.current();
+        if (facts.enabled()) {
+            candidates.removeIf(m -> facts.isNotCalledBack(
+                    m.getDeclaringClassType().getFullyQualifiedName().replace('.', '/'),
+                    m.getName(), BranchKeys.nameAndDescriptor(m.getSignature()).substring(m.getName().length())));
+        }
+        return candidates;
+    }
+
+    private static Set<SootMethod> allCandidates(JavaView view) {
         Set<SootMethod> candidates = new LinkedHashSet<>();
         view.getClasses().filter(SootClass::isApplicationClass).forEach(c -> {
             Set<String> librarySubSignatures = librarySubSignatures(c, view);
