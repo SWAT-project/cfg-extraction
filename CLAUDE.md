@@ -235,8 +235,12 @@ graph.
   to `UserFacts.target` (an unmodelled SWAT helper: open world for the pre-check), and keep its
   code.
 - **`@Irrelevant`** (class, method, constructor) and **`Swat.beginIrrelevant/endIrrelevant`**
-  regions (the lines strictly between the two calls): their nodes get `userFact`, named as SWAT's
-  executor names the fact. SWAT's relevance analysis checks and uses them (SWAT's CLAUDE.md).
+  regions (the instructions from the begin call to the end call in bytecode order, or to the end
+  of the method without one, as the executor applies them): their nodes get `userFact`, named as
+  SWAT's executor names the fact; a node on a line that also has instructions outside the region
+  gets `userFactNear` (checked, never applied). SWAT's relevance analysis checks and uses them
+  (SWAT's CLAUDE.md). A `@Target` also counts where it is reached through a callback or a static
+  initializer (`ClinitTargets`), and jars' annotations are read too.
 - **`Swat.summary()`** (or `UserFacts.summary(String)` in prepared classes): the `if` on its result
   gets `deadSide` (the edge type of the loop's side, which never runs while SWAT runs with user
   facts) and `summaryFact`. SWAT replaces that edge's target by a dead end. The branch stays, so
