@@ -413,6 +413,14 @@ final class DataflowFacts {
         if (owner.equals("java.lang.Object") && sig.getName().equals("<init>")) {
             return true;
         }
+        if (owner.equals("java.lang.Class") && sig.getName().equals("desiredAssertionStatus")
+                && sig.getParameterTypes().isEmpty()) {
+            // javac's $assertionsDisabled in the static initializer of every class with an assert:
+            // it reads the JVM's assertion setting, the same throughout a run, and touches no
+            // program state (as a heap call, every assertion outside the entry class would read
+            // all library state and all arrays).
+            return true;
+        }
         if (invoke instanceof JDynamicInvokeExpr indy) {
             // String concatenation calls toString() on its operands, which may be a callback.
             return isPlainIndy(indy) && invoke.getArgs().stream().allMatch(a -> isValueType(a.getType()));
