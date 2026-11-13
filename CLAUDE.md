@@ -206,6 +206,11 @@ the executor on 2026-11-04. ASM only, no SootUp, no other dependency.
   the meaning or the format of the facts changes.
 - **Heads hash live locals only** (`LoopHeads.liveIn`, since `VERSION` 2): a local dead at the head
   is left out; liveness follows the analyzer's control flow, exception edges included.
+- **Call sites** (`LoopHeads.callSites`, `"calls"`, since `VERSION` 3): the calls (not into the
+  JDK, not in constructors) whose operand stack holds only the call's receiver and arguments, by
+  their ordinal among the method's method-call instructions, with the locals live after the call
+  (normal and exceptional edges). The executor records them at the call, so that a head in a
+  callee is hashed with its callers' frames (SWAT's `LoopStateMatcher`).
 - **Positions.** Jumps are named by their ordinal among the method's jump instructions, labels by
   the number of real instructions before them (`Positions`), so that the facts do not depend on
   how the class was read (frames, debug info). Join ids are unique per method.
