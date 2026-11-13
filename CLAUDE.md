@@ -170,7 +170,9 @@ java -cp build/libs/cfg-extractor-precheck.jar de.uzl.its.cfg.staticcheck.Except
 - **Releases:** SWAT ships the jar in its SV-COMP archive, built in CI at the tag named in
   `SWAT/cfg-extraction.ref`. To release: pass the gate, tag, push the tag, then move the ref.
   `v0.1.0` is the pre-check alone; `v0.2.0` adds the data-flow facts for SWAT's relevance analysis
-  (same pre-check). The gate needs PyYAML.
+  (same pre-check); `v0.3.0` (2026-11-13) adds the loop facts library (`loops`, with call sites
+  and class-file annotations), prepared-class support, hand-written facts (`facts`) and the pre-check's
+  `@Target`. The gate needs PyYAML.
 - **License:** MIT (`LICENSE`); both jars carry it (`META-INF/LICENSE`, in the fat jar
   `META-INF/LICENSE-cfg-extraction`). The repository is public, so SWAT's CI checks it out
   without a token.
