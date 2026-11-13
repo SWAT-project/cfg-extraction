@@ -13,6 +13,7 @@ import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LookupSwitchInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TableSwitchInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
@@ -67,6 +68,36 @@ public final class LoopHeads {
     private LoopHeads() {}
 
     /**
+     * A call site at which the caller's state can be hashed while the callee runs (loop-state
+     * matching across frames): its operand stack holds nothing but the call's receiver and
+     * arguments, so that after the call returns, the caller continues from its locals alone.
+     *
+     * @param ordinal its position among the method's method-call instructions (invokedynamic not
+     *     counted), part of its name in the executor
+     * @param slots the local slots live after the call returns, normally or by an exception (the
+     *     locals the caller may still read)
+     * @param kinds the kind of each slot
+     */
+    public record CallSite(int ordinal, int[] slots, char[] kinds) {
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof CallSite c && ordinal == c.ordinal
+                    && java.util.Arrays.equals(slots, c.slots) && java.util.Arrays.equals(kinds, c.kinds);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * ordinal + java.util.Arrays.hashCode(slots);
+        }
+
+        @Override
+        public String toString() {
+            return "CallSite[ordinal=" + ordinal + ", slots=" + java.util.Arrays.toString(slots)
+                    + ", kinds=" + new String(kinds) + "]";
+        }
+    }
+
+    /**
      * Finds the loop heads of a method of {@code owner}, in the order of their positions; none if
      * the method cannot be analysed.
      */
@@ -102,73 +133,150 @@ public final class LoopHeads {
         if (targets.isEmpty()) {
             return result;
         }
-        Frame<BasicValue>[] frames;
-        List<List<Integer>> successors = new ArrayList<>();
-        for (int i = 0; i < insns.size(); i++) {
-            successors.add(new ArrayList<>(2));
-        }
-        try {
-            frames = new Analyzer<>(new BasicInterpreter()) {
-                @Override
-                protected void newControlFlowEdge(int insn, int successor) {
-                    successors.get(insn).add(successor);
-                }
-
-                @Override
-                protected boolean newControlFlowExceptionEdge(int insn, int successor) {
-                    successors.get(insn).add(successor);
-                    return true;
-                }
-            }.analyze(owner, mn);
-        } catch (AnalyzerException | RuntimeException e) {
+        Flow flow = Flow.of(owner, mn);
+        if (flow == null) {
             return result;
         }
-        BitSet[] live = liveIn(insns, successors, mn.maxLocals);
         targets.sort((a, b) -> Integer.compare(insns.indexOf(a), insns.indexOf(b)));
         int ordinal = 0;
         for (LabelNode target : targets) {
-            Frame<BasicValue> f = frames[insns.indexOf(target)];
+            int i = insns.indexOf(target);
+            Frame<BasicValue> f = flow.frames[i];
             int position = ordinal++;
             if (f == null || f.getStackSize() != 0) {
                 continue; // unreachable, or values on the operand stack the probe cannot see
             }
-            List<Integer> slots = new ArrayList<>();
-            StringBuilder kinds = new StringBuilder();
-            boolean usable = true;
-            for (int i = 0; i < f.getLocals(); i++) {
-                BasicValue v = f.getLocal(i);
-                if (v == null || v == BasicValue.UNINITIALIZED_VALUE) {
-                    continue; // never read before it is written again
-                }
-                if (!live[insns.indexOf(target)].get(i)) {
-                    continue; // dead: written again before any read
-                }
-                if (v == BasicValue.RETURNADDRESS_VALUE) {
-                    usable = false;
-                    break;
-                }
-                char kind = switch (v.getType().getSort()) {
-                    case Type.BOOLEAN, Type.CHAR, Type.BYTE, Type.SHORT, Type.INT -> INT;
-                    case Type.LONG -> LONG;
-                    case Type.FLOAT -> FLOAT;
-                    case Type.DOUBLE -> DOUBLE;
-                    case Type.OBJECT, Type.ARRAY -> REFERENCE;
-                    default -> 0;
-                };
-                if (kind == 0) {
-                    usable = false;
-                    break;
-                }
-                slots.add(i);
-                kinds.append(kind);
+            int[][] slots = new int[1][];
+            char[][] kinds = new char[1][];
+            if (liveLocals(f, flow.live[i], slots, kinds)) {
+                result.add(new LoopHead(Positions.of(insns, target), position, slots[0], kinds[0]));
             }
-            if (!usable) {
-                continue;
-            }
-            result.add(new LoopHead(Positions.of(insns, target), position,
-                    slots.stream().mapToInt(Integer::intValue).toArray(), kinds.toString().toCharArray()));
         }
         return result;
+    }
+
+    /**
+     * Finds the call sites of a method of {@code owner} whose caller state can be hashed (see
+     * {@link CallSite}), in the order of their ordinals. Calls to the JDK are left out (the executor
+     * hashes no state while JDK code runs); constructors have none (their receiver is
+     * uninitialized before the super call).
+     */
+    public static List<CallSite> callSites(String owner, MethodNode mn) {
+        List<CallSite> result = new ArrayList<>();
+        if (mn.instructions.size() == 0 || mn.name.equals("<init>")) {
+            return result;
+        }
+        InsnList insns = mn.instructions;
+        boolean any = false;
+        for (AbstractInsnNode n : insns) {
+            if (n instanceof JumpInsnNode j && j.getOpcode() == Opcodes.JSR) {
+                return result;
+            }
+            any |= n instanceof MethodInsnNode m && !isJdk(m.owner);
+        }
+        if (!any) {
+            return result;
+        }
+        Flow flow = Flow.of(owner, mn);
+        if (flow == null) {
+            return result;
+        }
+        int ordinal = 0;
+        for (AbstractInsnNode n : insns) {
+            if (!(n instanceof MethodInsnNode m)) {
+                continue;
+            }
+            int position = ordinal++;
+            if (isJdk(m.owner)) {
+                continue;
+            }
+            int i = insns.indexOf(n);
+            Frame<BasicValue> f = flow.frames[i];
+            int args = Type.getArgumentTypes(m.desc).length + (m.getOpcode() == Opcodes.INVOKESTATIC ? 0 : 1);
+            if (f == null || f.getStackSize() != args) {
+                continue; // unreachable, or values below the arguments that the probe cannot see
+            }
+            int[][] slots = new int[1][];
+            char[][] kinds = new char[1][];
+            // Live on entry to the call = live after it on the normal and the exceptional edges (a
+            // call reads and writes no local)
+            if (liveLocals(f, flow.live[i], slots, kinds)) {
+                result.add(new CallSite(position, slots[0], kinds[0]));
+            }
+        }
+        return result;
+    }
+
+    /** Owners whose code the executor never hashes a state in. */
+    private static boolean isJdk(String owner) {
+        return owner.startsWith("java/") || owner.startsWith("javax/") || owner.startsWith("jdk/")
+                || owner.startsWith("sun/") || owner.startsWith("com/sun/");
+    }
+
+    /** The analyzer's frames of a method and the locals live on entry to each instruction. */
+    private record Flow(Frame<BasicValue>[] frames, BitSet[] live) {
+        static Flow of(String owner, MethodNode mn) {
+            InsnList insns = mn.instructions;
+            List<List<Integer>> successors = new ArrayList<>();
+            for (int i = 0; i < insns.size(); i++) {
+                successors.add(new ArrayList<>(2));
+            }
+            Frame<BasicValue>[] frames;
+            try {
+                frames = new Analyzer<>(new BasicInterpreter()) {
+                    @Override
+                    protected void newControlFlowEdge(int insn, int successor) {
+                        successors.get(insn).add(successor);
+                    }
+
+                    @Override
+                    protected boolean newControlFlowExceptionEdge(int insn, int successor) {
+                        successors.get(insn).add(successor);
+                        return true;
+                    }
+                }.analyze(owner, mn);
+            } catch (AnalyzerException | RuntimeException e) {
+                return null;
+            }
+            return new Flow(frames, liveIn(insns, successors, mn.maxLocals));
+        }
+    }
+
+    /**
+     * The locals of a frame that are defined and live, and their kinds, into {@code slots[0]} and
+     * {@code kinds[0]}; false if one of them cannot be hashed (a return address).
+     */
+    private static boolean liveLocals(Frame<BasicValue> f, BitSet live, int[][] slots, char[][] kinds) {
+        List<Integer> s = new ArrayList<>();
+        StringBuilder k = new StringBuilder();
+        for (int i = 0; i < f.getLocals(); i++) {
+            BasicValue v = f.getLocal(i);
+            if (v == null || v == BasicValue.UNINITIALIZED_VALUE) {
+                continue; // never read before it is written again
+            }
+            if (!live.get(i)) {
+                continue; // dead: written again before any read
+            }
+            if (v == BasicValue.RETURNADDRESS_VALUE) {
+                return false;
+            }
+            char kind = switch (v.getType().getSort()) {
+                case Type.BOOLEAN, Type.CHAR, Type.BYTE, Type.SHORT, Type.INT -> INT;
+                case Type.LONG -> LONG;
+                case Type.FLOAT -> FLOAT;
+                case Type.DOUBLE -> DOUBLE;
+                case Type.OBJECT, Type.ARRAY -> REFERENCE;
+                default -> 0;
+            };
+            if (kind == 0) {
+                return false;
+            }
+            s.add(i);
+            k.append(kind);
+        }
+        slots[0] = s.stream().mapToInt(Integer::intValue).toArray();
+        kinds[0] = k.toString().toCharArray();
+        return true;
     }
 
     /**

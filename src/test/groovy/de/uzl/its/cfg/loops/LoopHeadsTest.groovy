@@ -111,4 +111,43 @@ class LoopHeadsTest extends Specification {
         expect:
         LoopHeads.analyze("Fixture3", mn).isEmpty()
     }
+
+    /**
+     * {@code static int g(int a, int b, int dead) { int r = h(a); dead = 0; r += a + dead; return r + h(b) + 1; }}
+     * with h in another class and a JDK call in between.
+     */
+    static MethodNode calls() {
+        MethodNode mn = new MethodNode(Opcodes.ASM9, Opcodes.ACC_STATIC, "g", "(III)I", null, null)
+        mn.visitCode()
+        mn.visitVarInsn(Opcodes.ILOAD, 0)
+        mn.visitMethodInsn(Opcodes.INVOKESTATIC, "app/Other", "h", "(I)I", false) // ordinal 0: stack = args
+        mn.visitVarInsn(Opcodes.ISTORE, 3)
+        mn.visitInsn(Opcodes.ICONST_0)
+        mn.visitVarInsn(Opcodes.ISTORE, 2)
+        mn.visitVarInsn(Opcodes.ILOAD, 0)
+        mn.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Math", "abs", "(I)I", false) // ordinal 1: JDK
+        mn.visitVarInsn(Opcodes.ILOAD, 2)
+        mn.visitInsn(Opcodes.IADD)
+        mn.visitVarInsn(Opcodes.ILOAD, 3)
+        mn.visitInsn(Opcodes.IADD)
+        mn.visitVarInsn(Opcodes.ILOAD, 1)
+        mn.visitMethodInsn(Opcodes.INVOKESTATIC, "app/Other", "h", "(I)I", false) // ordinal 2: a value below the args
+        mn.visitInsn(Opcodes.IADD)
+        mn.visitInsn(Opcodes.IRETURN)
+        mn.visitMaxs(3, 4)
+        mn.visitEnd()
+        return mn
+    }
+
+    def "a call site lists the locals live after the call; one with values below its arguments is left out"() {
+        when:
+        def sites = LoopHeads.callSites("Fixture5", calls())
+
+        then:
+        sites.size() == 1
+        sites[0].ordinal() == 0
+        // a and b are read later; dead (slot 2) is written before it is read; r (slot 3) is not defined yet
+        sites[0].slots() as List == [0, 1]
+        sites[0].kinds() as List == ['I' as char, 'I' as char]
+    }
 }

@@ -1,5 +1,6 @@
 package de.uzl.its.cfg.loops;
 
+import de.uzl.its.cfg.loops.LoopHeads.CallSite;
 import de.uzl.its.cfg.loops.LoopHeads.LoopHead;
 import de.uzl.its.cfg.loops.LoopSummaries.MethodPlans;
 import java.nio.charset.StandardCharsets;
@@ -31,7 +32,8 @@ import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 /**
- * The loop facts of a method: its loop heads (for loop-state matching) and its loop summaries.
+ * The loop facts of a method: its loop heads and call sites (for loop-state matching) and its loop
+ * summaries.
  *
  * <p>The static analysis computes them for the application ahead of time and writes them to a file
  * ({@link LoopFactsJson}, {@link LoopFactsMain}); the executor reads that file when it instruments
@@ -47,7 +49,7 @@ import org.objectweb.asm.tree.VarInsnNode;
 public final class LoopFacts {
 
     /** The version of the facts and of their file format; a file of another version is ignored. */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /**
      * The facts of one method.
@@ -55,10 +57,11 @@ public final class LoopFacts {
      * @param hash the {@link #hash} of the method's code
      * @param heads its loop heads
      * @param plans its loop summaries
+     * @param calls its call sites whose caller state can be hashed while the callee runs
      */
-    public record MethodFacts(String hash, List<LoopHead> heads, MethodPlans plans) {
+    public record MethodFacts(String hash, List<LoopHead> heads, MethodPlans plans, List<CallSite> calls) {
         public boolean isEmpty() {
-            return heads.isEmpty() && plans.byJump().isEmpty();
+            return heads.isEmpty() && plans.byJump().isEmpty() && calls.isEmpty();
         }
     }
 
@@ -71,7 +74,8 @@ public final class LoopFacts {
 
     /** Computes the facts of a method of {@code owner}. */
     public static MethodFacts analyze(String owner, MethodNode mn) {
-        return new MethodFacts(hash(mn), List.copyOf(LoopHeads.analyze(owner, mn)), LoopSummaries.analyze(owner, mn));
+        return new MethodFacts(hash(mn), List.copyOf(LoopHeads.analyze(owner, mn)), LoopSummaries.analyze(owner, mn),
+                List.copyOf(LoopHeads.callSites(owner, mn)));
     }
 
     /**

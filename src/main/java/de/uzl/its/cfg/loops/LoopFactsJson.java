@@ -1,6 +1,7 @@
 package de.uzl.its.cfg.loops;
 
 import de.uzl.its.cfg.loops.LoopFacts.MethodFacts;
+import de.uzl.its.cfg.loops.LoopHeads.CallSite;
 import de.uzl.its.cfg.loops.LoopHeads.LoopHead;
 import de.uzl.its.cfg.loops.LoopSummaries.BackEdge;
 import de.uzl.its.cfg.loops.LoopSummaries.CountingLoop;
@@ -22,9 +23,10 @@ import java.util.TreeMap;
  * class (it has no dependencies beyond the JDK, so it can live in the executor's agent jar):
  *
  * <pre>
- * {"version": 1, "methods": {"owner.name(desc)": {
+ * {"version": 3, "methods": {"owner.name(desc)": {
  *     "hash": "...",
  *     "heads": [[at, ordinal, [slot, ...], "kinds"], ...],
+ *     "calls": [[ordinal, [slot, ...], "kinds"], ...],
  *     "plans": {"jumpOrdinal": plan, ...},
  *     "joins": {"position": joinId, ...}}}}
  * </pre>
@@ -122,6 +124,20 @@ public final class LoopFactsJson {
                 }
                 sb.append("], ");
                 string(sb, new String(h.kinds()));
+                sb.append(']');
+            }
+            sb.append(']');
+        }
+        if (!f.calls().isEmpty()) {
+            sb.append(", \"calls\": [");
+            for (int k = 0; k < f.calls().size(); k++) {
+                CallSite c = f.calls().get(k);
+                sb.append(k == 0 ? "" : ", ").append('[').append(c.ordinal()).append(", [");
+                for (int s = 0; s < c.slots().length; s++) {
+                    sb.append(s == 0 ? "" : ", ").append(c.slots()[s]);
+                }
+                sb.append("], ");
+                string(sb, new String(c.kinds()));
                 sb.append(']');
             }
             sb.append(']');
@@ -231,6 +247,15 @@ public final class LoopFactsJson {
                         slots.stream().mapToInt(LoopFactsJson::integer).toArray(), ((String) h.get(3)).toCharArray()));
             }
         }
+        List<CallSite> calls = new ArrayList<>();
+        if (m.get("calls") instanceof List<?> cs) {
+            for (Object o : cs) {
+                List<?> c = (List<?>) o;
+                List<?> slots = (List<?>) c.get(1);
+                calls.add(new CallSite(integer(c.get(0)), slots.stream().mapToInt(LoopFactsJson::integer).toArray(),
+                        ((String) c.get(2)).toCharArray()));
+            }
+        }
         Map<Integer, Plan> byJump = new java.util.HashMap<>();
         if (m.get("plans") instanceof Map<?, ?> ps) {
             Map<Integer, Integer> backEdges = new java.util.HashMap<>();
@@ -253,7 +278,7 @@ public final class LoopFactsJson {
             backEdges.forEach((ordinal, head) -> byJump.put(ordinal, new BackEdge((CountingLoop) byJump.get(head))));
         }
         Map<Integer, Integer> joins = m.containsKey("joins") ? intMap(m.get("joins")) : Map.of();
-        return new MethodFacts((String) m.get("hash"), List.copyOf(heads), new MethodPlans(byJump, joins));
+        return new MethodFacts((String) m.get("hash"), List.copyOf(heads), new MethodPlans(byJump, joins), List.copyOf(calls));
     }
 
     private static Diamond diamond(Map<?, ?> d) {
