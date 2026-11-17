@@ -236,8 +236,11 @@ callback and an exception, so callbacks need no extra points.
 
 Library calls are summarised by signature (pure, output only, input, terminating, reflective, else
 `g:lib` plus every array they may get plus whatever an application callback may write); statements
-that may run a static initializer also get its transitive effects. Everything over-approximates:
-a missing write lets SWAT slice a branch that matters.
+that may run a static initializer also get its transitive effects. A library constructor also
+writes the object it initializes (`$r` of `specialinvoke $r.<init>(args)`), from its arguments:
+SWAT's preparation turns `Integer.valueOf(k)` and autoboxing into `new Integer(k)`, and the box is
+all that later reads `k`. A call given a primitive array reads its elements too (`new String(chars)`).
+Everything over-approximates: a missing write lets SWAT slice a branch that matters.
 
 ## Example Output
 

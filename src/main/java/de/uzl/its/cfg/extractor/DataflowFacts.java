@@ -72,8 +72,10 @@ import sootup.java.core.views.JavaView;
  * String), input ({@code Verifier.nondet*}), terminating ({@code System.exit}, {@code
  * Runtime.halt}, {@code Verifier.assume}), reflective (anything), or else heap: it reads and writes
  * {@link #LIB}, every array it may be given, and whatever an application callback (see {@link
- * CallbackTargets}) may write. Static initializers are not in the graph either: a statement that may
- * run one also gets its effects.
+ * CallbackTargets}) may write. A library constructor also writes the object it initializes, from
+ * its arguments ({@code new Integer(k)}, which SWAT's preparation makes of boxing), and a call given
+ * a primitive array reads its elements. Static initializers are not in the graph either: a statement
+ * that may run one also gets its effects.
  */
 final class DataflowFacts {
 
@@ -244,11 +246,22 @@ final class DataflowFacts {
         Set<String> everything = new LinkedHashSet<>(allArgs);
         everything.addAll(base);
         everything.addAll(resultAddress);
-        Set<String> resultOnly = result == null ? Set.of() : Set.of(result);
-
         MethodSignature sig = invoke.getMethodSignature();
         String owner = sig.getDeclClassType().getFullyQualifiedName();
         String name = sig.getName();
+
+        // What the call defines: its result, and for a constructor the object it initializes (the
+        // reference the caller keeps, `$r = new T; specialinvoke $r.<init>(args)`), which holds
+        // what the arguments gave it. Without it, `new Integer(k)` (which SWAT's preparation makes
+        // of Integer.valueOf(k) and of autoboxing) would depend on nothing, and a branch whose
+        // value reaches a target only through the box would be sliced.
+        Set<String> defined = new LinkedHashSet<>();
+        if (result != null) {
+            defined.add(result);
+        }
+        if (name.equals("<init>")) {
+            defined.addAll(base);
+        }
 
         if (kind == CallKind.APPLICATION) {
             Map<String, Object> call = new LinkedHashMap<>();
@@ -280,7 +293,7 @@ final class DataflowFacts {
                 effects.add(libraryHeapEffects(invoke));
             }
             Set<String> written = new LinkedHashSet<>(effects.writes);
-            written.addAll(resultOnly);
+            written.addAll(defined);
             Set<String> read = new LinkedHashSet<>(effects.reads);
             read.addAll(everything);
             facts.pair(written, read);
@@ -292,7 +305,7 @@ final class DataflowFacts {
         SwatHelpers.Kind swat = SwatHelpers.kindOfDotted(owner, name, descriptorOf(sig));
         switch (swat) {
             case NONDET: {
-                Set<String> written = new LinkedHashSet<>(resultOnly);
+                Set<String> written = new LinkedHashSet<>(defined);
                 written.add(INPUT);
                 Set<String> read = new LinkedHashSet<>(everything);
                 read.add(INPUT);
@@ -311,11 +324,11 @@ final class DataflowFacts {
                 return; // invisible to the program
             case IDENTITY:
                 // liftValue(value, id): the value (the id is a constant)
-                facts.pair(resultOnly, args.isEmpty() ? Set.of() : args.get(0));
+                facts.pair(defined, args.isEmpty() ? Set.of() : args.get(0));
                 return;
             case REF_EQUALS:
             case INTERN:
-                facts.pair(resultOnly, everything);
+                facts.pair(defined, everything);
                 return;
             default:
                 break;
@@ -324,7 +337,7 @@ final class DataflowFacts {
         // A library call (or one of SV-COMP's Verifier stubs, which SWAT replaces).
         if (owner.equals(VERIFIER)) {
             if (name.startsWith("nondet")) {
-                Set<String> written = new LinkedHashSet<>(resultOnly);
+                Set<String> written = new LinkedHashSet<>(defined);
                 written.add(INPUT);
                 Set<String> read = new LinkedHashSet<>(everything);
                 read.add(INPUT);
@@ -336,7 +349,7 @@ final class DataflowFacts {
                 facts.control = List.copyOf(allArgs);
                 return;
             }
-            facts.pair(resultOnly, everything);
+            facts.pair(defined, everything);
             return;
         }
         if (isExit(owner, name)) {
@@ -344,7 +357,7 @@ final class DataflowFacts {
             return;
         }
         if (isReflective(owner, name) || invoke instanceof JDynamicInvokeExpr && !isPlainIndy((JDynamicInvokeExpr) invoke)) {
-            Set<String> written = new LinkedHashSet<>(resultOnly);
+            Set<String> written = new LinkedHashSet<>(defined);
             written.add(ANY);
             Set<String> read = new LinkedHashSet<>(everything);
             read.add(ANY);
@@ -354,7 +367,7 @@ final class DataflowFacts {
         LibraryFacts.Entry stub = libraryFact(invoke);
         if (stub != null) {
             // Hand-written library facts (user facts): only the families they name
-            Set<String> written = new LinkedHashSet<>(resultOnly);
+            Set<String> written = new LinkedHashSet<>(defined);
             Set<String> read = new LinkedHashSet<>(everything);
             for (String f : stub.writes()) {
                 written.add(LibraryFacts.location(f));
@@ -374,19 +387,29 @@ final class DataflowFacts {
             }
             return;
         }
+        // The elements of the primitive arrays it is given, which such a call reads (new
+        // String(chars), String.valueOf(chars)): reading the array reference is not enough.
+        Set<String> withElements = new LinkedHashSet<>(everything);
+        withElements.addAll(primitiveArrayElements(sig));
         if (isPure(invoke)) {
-            facts.pair(resultOnly, everything);
+            Set<String> written = new LinkedHashSet<>(defined);
+            if (writesArrayArgument(owner, name, sig)) {
+                written.addAll(primitiveArrayElements(sig));
+            }
+            facts.pair(written, withElements);
             return;
         }
         if (isOutput(invoke)) {
-            facts.pair(Set.of(OUT), everything);
-            facts.pair(resultOnly, base);
+            facts.pair(Set.of(OUT), withElements);
+            facts.pair(defined, base);
             return;
         }
         if (name.equals("<init>") && sig.getParameterTypes().stream().allMatch(DataflowFacts::isValueTypeOrPrimitiveArray)) {
             // A library constructor given no application object (an exception with a message, a
             // StringBuilder): it initializes a new library object and runs no application code.
-            facts.pair(allLibraryState(), everything);
+            Set<String> written = new LinkedHashSet<>(allLibraryState());
+            written.addAll(defined); // the object itself, as above
+            facts.pair(written, withElements);
             return;
         }
         Effects effects = libraryHeapEffects(invoke);
@@ -394,7 +417,7 @@ final class DataflowFacts {
             effects.add(callbackEffects());
         }
         Set<String> written = new LinkedHashSet<>(effects.writes);
-        written.addAll(resultOnly);
+        written.addAll(defined);
         Set<String> read = new LinkedHashSet<>(effects.reads);
         read.addAll(everything);
         facts.pair(written, read);
@@ -549,6 +572,24 @@ final class DataflowFacts {
             return false; // writes into the array it is given
         }
         return sig.getParameterTypes().stream().allMatch(DataflowFacts::isValueTypeOrPrimitiveArray);
+    }
+
+    /** The element locations of the primitive arrays among a method's parameters. */
+    private static Set<String> primitiveArrayElements(MethodSignature sig) {
+        Set<String> elements = new LinkedHashSet<>();
+        for (Type type : sig.getParameterTypes()) {
+            if (type instanceof ArrayType arrayType && arrayType.getDimension() == 1
+                    && arrayType.getBaseType() instanceof PrimitiveType) {
+                elements.add(elementKind(arrayType.getBaseType()));
+            }
+        }
+        return elements;
+    }
+
+    /** A pure method (see isPure) that also writes into an array it is given. */
+    private static boolean writesArrayArgument(String owner, String name, MethodSignature sig) {
+        return owner.equals("java.lang.Character") && name.equals("toChars")
+                && sig.getParameterTypes().stream().anyMatch(t -> t instanceof ArrayType); // toChars(cp, dst, index)
     }
 
     private static boolean isOutput(AbstractInvokeExpr invoke) {
